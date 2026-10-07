@@ -151,6 +151,33 @@ function trimMessagesForGroq(body = {}) {
   return copy;
 }
 
+const providerCooldowns = new Map();
+
+function providerCoolingDown(name) {
+  const until = providerCooldowns.get(name) || 0;
+  if (until <= Date.now()) {
+    providerCooldowns.delete(name);
+    return false;
+  }
+  return true;
+}
+
+function setProviderCooldown(name, error) {
+  const text = String(error?.message || error || "").toLowerCase();
+  let ms = 0;
+  if (/\b402\b|out of credit|insufficient credit|more credits/.test(text)) ms = 30 * 60 * 1000;
+  else if (/\b429\b|quota exceeded|rate limit/.test(text)) {
+    const retry = text.match(/retry(?: in| after)?\s*(\d+(?:\.\d+)?)\s*(s|m|h)/i);
+    if (retry) {
+      const n = Number(retry[1]);
+      ms = n * (retry[2].toLowerCase() === "h" ? 3600000 : retry[2].toLowerCase() === "m" ? 60000 : 1000);
+    } else {
+      ms = 60 * 1000;
+    }
+  } else if (/\b503\b|unavailable|high demand/.test(text)) ms = 30 * 1000;
+  if (ms > 0) providerCooldowns.set(name, Date.now() + Math.min(ms, 24 * 60 * 60 * 1000));
+}
+
 const providers = {
   async groq(body) {
     body = compactToolsForProvider(trimMessagesForGroq(normalizedBody(body)), Number(process.env.GROQ_MAX_TOOLS || 12));
@@ -289,6 +316,8 @@ const providers = {
 
   async openrouter(body) {
     body = normalizedBody(body);
+    const openRouterCap = Math.max(1, Number(process.env.OPENROUTER_MAX_OUTPUT_TOKENS || 1024));
+    body.max_tokens = Math.min(Number(body.max_tokens || openRouterCap), openRouterCap);
     if (!process.env.OPENROUTER_API_KEY) throw new Error("OPENROUTER_API_KEY missing");
     const headers = {
       "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
@@ -364,6 +393,10 @@ app.post("/v1/chat/completions", async (req, res) => {
     : order;
 
   for (const name of requestOrder) {
+    if (providerCoolingDown(name)) {
+      errors.push({ provider: name, error: "Temporarily skipped after a recent quota/rate/credit failure" });
+      continue;
+    }
     const fn = providers[name];
     if (!fn) {
       errors.push({ provider: name, error: "Unknown provider" });
@@ -455,6 +488,7 @@ app.post("/v1/chat/completions", async (req, res) => {
         .replace(/(Bearer\\s+)[A-Za-z0-9._-]+/gi, "$1[REDACTED]")
         .slice(0, 500);
       console.error(`[router] provider=${name} failed: ${safeError}`);
+      setProviderCooldown(name, err);
       errors.push({ provider: name, error: safeError });
     }
   }
