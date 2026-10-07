@@ -12,8 +12,29 @@ const order = (process.env.PROVIDER_ORDER || "groq,gemini,mistral,openrouter")
   .map(x => x.trim().toLowerCase())
   .filter(Boolean);
 
+function messageText(content) {
+  if (typeof content === "string") return content;
+  if (content == null) return "";
+  if (Array.isArray(content)) {
+    return content.map(part => {
+      if (typeof part === "string") return part;
+      if (part && typeof part.text === "string") return part.text;
+      if (part && typeof part.content === "string") return part.content;
+      return "";
+    }).filter(Boolean).join("\n");
+  }
+  if (typeof content === "object" && typeof content.text === "string") return content.text;
+  return JSON.stringify(content);
+}
+
 function normalizedBody(body = {}) {
   const copy = { ...body };
+  if (Array.isArray(copy.messages)) {
+    copy.messages = copy.messages.map(message => ({
+      ...message,
+      content: messageText(message?.content)
+    }));
+  }
   const requested = Number(copy.max_tokens ?? copy.max_completion_tokens);
   const cap = Math.max(1, Number(process.env.MAX_OUTPUT_TOKENS || 2048));
   if (!Number.isFinite(requested) || requested > cap) copy.max_tokens = cap;
