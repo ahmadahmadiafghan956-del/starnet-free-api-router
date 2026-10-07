@@ -53,7 +53,7 @@ function normalizedBody(body = {}) {
 function trimMessagesForGroq(body = {}) {
   const copy = { ...body };
   const messages = Array.isArray(copy.messages) ? copy.messages : [];
-  const maxChars = Math.max(4000, Number(process.env.GROQ_MAX_INPUT_CHARS || 24000));
+  const maxChars = Math.max(4000, Number(process.env.GROQ_MAX_INPUT_CHARS || 12000));
   let used = 0;
   const kept = [];
 
