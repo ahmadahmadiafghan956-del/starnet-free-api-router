@@ -216,9 +216,9 @@ app.post("/v1/chat/completions", async (req, res) => {
           }]
         };
 
-        res.write(`data: ${JSON.stringify(first)}\\n\\n`);
-        res.write(`data: ${JSON.stringify(last)}\\n\\n`);
-        res.write("data: [DONE]\\n\\n");
+        res.write(`data: ${JSON.stringify(first)}\n\n`);
+        res.write(`data: ${JSON.stringify(last)}\n\n`);
+        res.write("data: [DONE]\n\n");
         return res.end();
       }
 
