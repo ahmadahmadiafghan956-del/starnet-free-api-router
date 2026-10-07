@@ -50,6 +50,53 @@ function normalizedBody(body = {}) {
   return copy;
 }
 
+function lastUserText(body = {}) {
+  const messages = Array.isArray(body.messages) ? body.messages : [];
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]?.role === "user") return messageText(messages[i]?.content);
+  }
+  return "";
+}
+
+function explicitToolIntent(body = {}) {
+  if (!Array.isArray(body.tools) || body.tools.length === 0) return false;
+  if (body.tool_choice === "required") return true;
+  const text = lastUserText(body).toLowerCase();
+  return /\b(use|call|invoke|run|execute|actually call|use one available)\b[\s\S]{0,80}\b(tool|function)\b/i.test(text) ||
+    /(ابزار|تول).{0,80}(استفاده|اجرا|صدا|کال)|(استفاده|اجرا).{0,80}(ابزار|تول)/i.test(text);
+}
+
+function selectRelevantTools(body = {}, limit = 12) {
+  const tools = Array.isArray(body.tools) ? body.tools : [];
+  if (tools.length <= limit) return tools;
+
+  const query = lastUserText(body).toLowerCase();
+  const words = new Set((query.match(/[a-z0-9_\-]{3,}|[\u0600-\u06ff]{3,}/gi) || [])
+    .map(x => x.toLowerCase()));
+
+  const ranked = tools.map((tool, index) => {
+    const name = String(tool?.function?.name || "").toLowerCase();
+    const description = String(tool?.function?.description || "").toLowerCase();
+    const haystack = name + " " + description;
+    let score = 0;
+    for (const word of words) {
+      if (name.includes(word)) score += 6;
+      else if (description.includes(word)) score += 2;
+    }
+    return { tool, index, score };
+  }).sort((a, b) => b.score - a.score || a.index - b.index);
+
+  return ranked.slice(0, limit).map(x => x.tool);
+}
+
+function compactToolsForProvider(body = {}, limit = 12) {
+  const copy = { ...body };
+  if (Array.isArray(copy.tools) && copy.tools.length > limit) {
+    copy.tools = selectRelevantTools(copy, limit);
+  }
+  return copy;
+}
+
 function trimMessagesForGroq(body = {}) {
   const copy = { ...body };
   const messages = Array.isArray(copy.messages) ? copy.messages : [];
@@ -73,7 +120,7 @@ function trimMessagesForGroq(body = {}) {
 
 const providers = {
   async groq(body) {
-    body = trimMessagesForGroq(normalizedBody(body));
+    body = compactToolsForProvider(trimMessagesForGroq(normalizedBody(body)), Number(process.env.GROQ_MAX_TOOLS || 12));
     if (!process.env.GROQ_API_KEY) throw new Error("GROQ_API_KEY missing");
     const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
@@ -275,8 +322,12 @@ app.post("/v1/chat/completions", async (req, res) => {
   }
 
   const errors = [];
+  const mustUseTool = explicitToolIntent(req.body || {});
+  const requestOrder = mustUseTool
+    ? ["gemini", ...order.filter(name => name !== "gemini")]
+    : order;
 
-  for (const name of order) {
+  for (const name of requestOrder) {
     const fn = providers[name];
     if (!fn) {
       errors.push({ provider: name, error: "Unknown provider" });
@@ -301,6 +352,9 @@ app.post("/v1/chat/completions", async (req, res) => {
       console.log(`[router] provider=${name} success tools_in=${toolsIn} tool_calls_out=${toolCallsOut} finish=${result?.choices?.[0]?.finish_reason || "unknown"}`);
       if (looksLikeSerializedToolCall || mentionsKnownTool) {
         throw new Error("Provider described/serialized a tool call as text instead of structured tool_calls");
+      }
+      if (mustUseTool && toolsIn > 0 && toolCallsOut === 0) {
+        throw new Error("Explicit tool request returned no structured tool_calls; trying next provider");
       }
 
       if (wantsStream) {
