@@ -33,7 +33,12 @@ function normalizedBody(body = {}) {
     copy.messages = copy.messages.map(message => ({
       ...message,
       content: messageText(message?.content)
-    }));
+    })).map(message => {
+      const clean = { ...message };
+      delete clean.ts;
+      delete clean.timestamp;
+      return clean;
+    });
   }
   const requested = Number(copy.max_tokens ?? copy.max_completion_tokens);
   const cap = Math.max(1, Number(process.env.MAX_OUTPUT_TOKENS || 2048));
