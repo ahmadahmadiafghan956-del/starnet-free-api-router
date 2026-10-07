@@ -105,8 +105,14 @@ const providers = {
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          ...body,
-          model
+          model,
+          messages: body.messages || [],
+          ...(body.temperature != null ? { temperature: body.temperature } : {}),
+          ...(body.top_p != null ? { top_p: body.top_p } : {}),
+          ...(body.max_tokens != null ? { max_tokens: body.max_tokens } : {}),
+          ...(body.stop != null ? { stop: body.stop } : {}),
+          ...(Array.isArray(body.tools) ? { tools: body.tools } : {}),
+          ...(body.tool_choice != null ? { tool_choice: body.tool_choice } : {})
         })
       }
     );
