@@ -263,14 +263,21 @@ app.post("/v1/chat/completions", async (req, res) => {
       console.log(`[router] provider=${name} success`);
 
       if (wantsStream) {
-        const content = result?.choices?.[0]?.message?.content ?? "";
+        const message = result?.choices?.[0]?.message || {};
+        const content = message?.content ?? "";
+        const toolCalls = Array.isArray(message?.tool_calls) ? message.tool_calls : [];
         const model = result?.model || req.body?.model || "starnet-router";
         const id = result?.id || `chatcmpl-router-${Date.now()}`;
+        const finishReason = result?.choices?.[0]?.finish_reason || (toolCalls.length ? "tool_calls" : "stop");
 
         res.status(200);
         res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
         res.setHeader("Cache-Control", "no-cache, no-transform");
         res.setHeader("Connection", "keep-alive");
+
+        const delta = { role: "assistant" };
+        if (content !== null && content !== "") delta.content = content;
+        if (toolCalls.length) delta.tool_calls = toolCalls;
 
         const first = {
           id,
@@ -279,7 +286,7 @@ app.post("/v1/chat/completions", async (req, res) => {
           model,
           choices: [{
             index: 0,
-            delta: { role: "assistant", content },
+            delta,
             finish_reason: null
           }]
         };
@@ -291,7 +298,7 @@ app.post("/v1/chat/completions", async (req, res) => {
           choices: [{
             index: 0,
             delta: {},
-            finish_reason: result?.choices?.[0]?.finish_reason || "stop"
+            finish_reason: finishReason
           }]
         };
 
