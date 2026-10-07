@@ -180,7 +180,48 @@ app.post("/v1/chat/completions", async (req, res) => {
     }
 
     try {
+      const wantsStream = req.body?.stream === true;
       const result = await fn(req.body || {});
+
+      if (wantsStream) {
+        const content = result?.choices?.[0]?.message?.content ?? "";
+        const model = result?.model || req.body?.model || "starnet-router";
+        const id = result?.id || `chatcmpl-router-${Date.now()}`;
+
+        res.status(200);
+        res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+        res.setHeader("Cache-Control", "no-cache, no-transform");
+        res.setHeader("Connection", "keep-alive");
+
+        const first = {
+          id,
+          object: "chat.completion.chunk",
+          created: Math.floor(Date.now() / 1000),
+          model,
+          choices: [{
+            index: 0,
+            delta: { role: "assistant", content },
+            finish_reason: null
+          }]
+        };
+        const last = {
+          id,
+          object: "chat.completion.chunk",
+          created: Math.floor(Date.now() / 1000),
+          model,
+          choices: [{
+            index: 0,
+            delta: {},
+            finish_reason: result?.choices?.[0]?.finish_reason || "stop"
+          }]
+        };
+
+        res.write(`data: ${JSON.stringify(first)}\\n\\n`);
+        res.write(`data: ${JSON.stringify(last)}\\n\\n`);
+        res.write("data: [DONE]\\n\\n");
+        return res.end();
+      }
+
       return res.status(200).json({
         ...result,
         router_provider: name
