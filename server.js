@@ -124,29 +124,55 @@ const providers = {
     body = normalizedBody(body);
     if (!process.env.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY missing");
     const model = process.env.GEMINI_MODEL || "gemini-3.5-flash";
+
+    // Convert OpenAI-style messages and tools from StarNet to Gemini format.
     const contents = (body.messages || []).map(m => ({
       role: m.role === "assistant" ? "model" : "user",
       parts: [{ text: typeof m.content === "string" ? m.content : JSON.stringify(m.content) }]
     }));
+    const functionDeclarations = Array.isArray(body.tools)
+      ? body.tools
+          .filter(t => t?.type === "function" && t?.function?.name)
+          .map(t => ({
+            name: t.function.name,
+            ...(t.function.description ? { description: t.function.description } : {}),
+            parameters: t.function.parameters || { type: "object", properties: {} }
+          }))
+      : [];
+
+    const requestBody = {
+      contents,
+      generationConfig: {
+        ...(body.temperature != null ? { temperature: body.temperature } : {}),
+        ...(body.max_tokens != null ? { maxOutputTokens: body.max_tokens } : {})
+      },
+      ...(functionDeclarations.length ? { tools: [{ functionDeclarations }] } : {})
+    };
 
     const r = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(process.env.GEMINI_API_KEY)}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents,
-          generationConfig: {
-            temperature: body.temperature,
-            maxOutputTokens: body.max_tokens
-          }
-        })
+        body: JSON.stringify(requestBody)
       }
     );
 
     if (!r.ok) throw new Error(`Gemini ${r.status}: ${await r.text()}`);
     const data = await r.json();
-    const text = data?.candidates?.[0]?.content?.parts?.map(p => p.text || "").join("") || "";
+    const parts = data?.candidates?.[0]?.content?.parts || [];
+    const text = parts.map(p => p?.text || "").join("");
+    const functionCalls = parts.filter(p => p?.functionCall?.name).map((p, index) => ({
+      id: `call_gemini_${Date.now()}_${index}`,
+      type: "function",
+      function: {
+        name: p.functionCall.name,
+        arguments: JSON.stringify(p.functionCall.args || {})
+      }
+    }));
+
+    const message = { role: "assistant", content: text || null };
+    if (functionCalls.length) message.tool_calls = functionCalls;
 
     return {
       id: "gemini-fallback",
@@ -154,8 +180,8 @@ const providers = {
       model,
       choices: [{
         index: 0,
-        message: { role: "assistant", content: text },
-        finish_reason: "stop"
+        message,
+        finish_reason: functionCalls.length ? "tool_calls" : "stop"
       }]
     };
   },
