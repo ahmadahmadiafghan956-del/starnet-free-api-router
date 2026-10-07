@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import express from "express";
 import dotenv from "dotenv";
 
@@ -22,7 +23,7 @@ const providers = {
       },
       body: JSON.stringify({
         ...body,
-        model: body.model || process.env.GROQ_MODEL || "llama-3.3-70b-versatile"
+        model: process.env.GROQ_MODEL || "llama-3.3-70b-versatile"
       })
     });
     if (!r.ok) throw new Error(`Groq ${r.status}: ${await r.text()}`);
@@ -31,7 +32,7 @@ const providers = {
 
   async gemini(body) {
     if (!process.env.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY missing");
-    const model = body.model || process.env.GEMINI_MODEL || "gemini-2.0-flash";
+    const model = process.env.GEMINI_MODEL || "gemini-2.0-flash";
     const contents = (body.messages || []).map(m => ({
       role: m.role === "assistant" ? "model" : "user",
       parts: [{ text: typeof m.content === "string" ? m.content : JSON.stringify(m.content) }]
@@ -78,7 +79,7 @@ const providers = {
       },
       body: JSON.stringify({
         ...body,
-        model: body.model || process.env.MISTRAL_MODEL || "mistral-small-latest"
+        model: process.env.MISTRAL_MODEL || "mistral-small-latest"
       })
     });
     if (!r.ok) throw new Error(`Mistral ${r.status}: ${await r.text()}`);
@@ -99,7 +100,7 @@ const providers = {
       headers,
       body: JSON.stringify({
         ...body,
-        model: body.model || process.env.OPENROUTER_MODEL || "meta-llama/llama-3.3-70b-instruct:free"
+        model: process.env.OPENROUTER_MODEL || "meta-llama/llama-3.3-70b-instruct:free"
       })
     });
     if (!r.ok) throw new Error(`OpenRouter ${r.status}: ${await r.text()}`);
@@ -107,11 +108,30 @@ const providers = {
   }
 };
 
+function hasValidRouterKey(req) {
+  const expected = process.env.ROUTER_API_KEY;
+  const authorization = req.get("authorization") || "";
+  const match = authorization.match(/^Bearer\s+(.+)$/i);
+  if (!expected || !match) return false;
+
+  const expectedBytes = Buffer.from(expected);
+  const providedBytes = Buffer.from(match[1]);
+  return expectedBytes.length === providedBytes.length &&
+    timingSafeEqual(expectedBytes, providedBytes);
+}
+
 app.get("/health", (_req, res) => {
   res.json({ ok: true, providers: order });
 });
 
 app.post("/v1/chat/completions", async (req, res) => {
+  if (!process.env.ROUTER_API_KEY) {
+    return res.status(503).json({ error: "Router authentication is not configured" });
+  }
+  if (!hasValidRouterKey(req)) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
   const errors = [];
 
   for (const name of order) {
