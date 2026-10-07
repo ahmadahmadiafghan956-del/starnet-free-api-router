@@ -265,11 +265,16 @@ app.post("/v1/chat/completions", async (req, res) => {
         ? result.choices[0].message.tool_calls.length
         : 0;
       const returnedText = String(result?.choices?.[0]?.message?.content || "");
+      const toolNames = Array.isArray(req.body?.tools)
+        ? req.body.tools.map(t => t?.function?.name).filter(Boolean)
+        : [];
+      const mentionsKnownTool = toolsIn > 0 && toolCallsOut === 0 &&
+        toolNames.some(toolName => returnedText.includes(toolName));
       const looksLikeSerializedToolCall = toolsIn > 0 && toolCallsOut === 0 &&
         /<tool_call>|<\/tool_call>|<arg_value>|<\/arg_value>/i.test(returnedText);
       console.log(`[router] provider=${name} success tools_in=${toolsIn} tool_calls_out=${toolCallsOut} finish=${result?.choices?.[0]?.finish_reason || "unknown"}`);
-      if (looksLikeSerializedToolCall) {
-        throw new Error("Provider returned a serialized tool call as text instead of structured tool_calls");
+      if (looksLikeSerializedToolCall || mentionsKnownTool) {
+        throw new Error("Provider described/serialized a tool call as text instead of structured tool_calls");
       }
 
       if (wantsStream) {
