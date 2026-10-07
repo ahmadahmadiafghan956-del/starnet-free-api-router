@@ -8,14 +8,15 @@ It tries providers in this order by default:
 
 1. Groq
 2. Google Gemini
-3. OpenRouter
+3. Mistral
+4. OpenRouter
 
-If one provider fails because of a rate limit, exhausted free quota, temporary outage, or missing key, the router tries the next provider.
+If one provider fails because of a rate limit, exhausted quota, temporary outage, or missing key, the router tries the next provider.
 
 ## Security
 
-- Real API keys are **never** stored in this repository.
-- Put keys only in a local or hosted `.env` file.
+- Real API keys are never stored in this repository.
+- Put keys only in your hosting provider's environment variables or a local `.env` file.
 - `.env` is ignored by Git.
 - If an API key has ever been posted publicly or shared in chat, revoke it and create a new one.
 
@@ -29,7 +30,7 @@ npm install
 cp .env.example .env
 ```
 
-3. Put your own keys into `.env`.
+3. Add provider keys to `.env` locally, or to the hosting provider's private environment settings.
 4. Start:
 
 ```bash
@@ -40,13 +41,13 @@ npm start
 
 Health:
 
-```
+```http
 GET /health
 ```
 
 Chat:
 
-```
+```http
 POST /v1/chat/completions
 ```
 
@@ -65,20 +66,16 @@ The response includes `router_provider` so you can see which provider answered.
 
 ## StarNet connection
 
-If StarNet supports a custom OpenAI-compatible base URL, point it to the deployed router URL and use:
-
-```
-/v1/chat/completions
-```
-
-This project does **not** bypass provider limits. It only moves to the next provider when one legitimately cannot serve the request.
+Set StarNet's OpenAI-compatible base URL to the deployed router URL and use the chat completions endpoint `/v1/chat/completions` if StarNet asks for the full path. Use any non-empty local label for the model if the UI requires one; the router selects each provider's configured default model unless the request supplies a model.
 
 ## Change provider order
 
-Set:
+Set the hosting environment variable:
 
-```
-PROVIDER_ORDER=groq,gemini,openrouter
+```text
+PROVIDER_ORDER=groq,gemini,mistral,openrouter
 ```
 
-You can remove any provider you do not want.
+You can remove providers that you do not want to use.
+
+This project does not bypass provider limits. It moves to the next provider when one cannot serve the request.
