@@ -124,6 +124,10 @@ app.get("/health", (_req, res) => {
   res.json({ ok: true, providers: order });
 });
 
+app.get("/v1", (_req, res) => {
+  res.json({ ok: true, service: "starnet-free-api-router", openai_compatible: true });
+});
+
 app.get("/v1/models", (req, res) => {
   if (!process.env.ROUTER_API_KEY) {
     return res.status(503).json({ error: "Router authentication is not configured" });
