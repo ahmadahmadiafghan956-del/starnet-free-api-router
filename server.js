@@ -30,13 +30,14 @@ function messageText(content) {
 function normalizedBody(body = {}) {
   const copy = { ...body };
   if (Array.isArray(copy.messages)) {
-    copy.messages = copy.messages.map(message => ({
-      ...message,
-      content: messageText(message?.content)
-    })).map(message => {
-      const clean = { ...message };
-      delete clean.ts;
-      delete clean.timestamp;
+    copy.messages = copy.messages.map(message => {
+      const clean = {
+        role: message?.role || "user",
+        content: messageText(message?.content)
+      };
+      if (message?.name != null) clean.name = message.name;
+      if (message?.tool_call_id != null) clean.tool_call_id = message.tool_call_id;
+      if (Array.isArray(message?.tool_calls)) clean.tool_calls = message.tool_calls;
       return clean;
     });
   }
