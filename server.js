@@ -7,7 +7,7 @@ dotenv.config();
 const app = express();
 app.use(express.json({ limit: "2mb" }));
 
-const order = (process.env.PROVIDER_ORDER || "groq,gemini,mistral,openrouter")
+const order = (process.env.PROVIDER_ORDER || "groq,cloudflare,gemini,mistral,openrouter")
   .split(",")
   .map(x => x.trim().toLowerCase())
   .filter(Boolean);
@@ -87,6 +87,30 @@ const providers = {
       })
     });
     if (!r.ok) throw new Error(`Groq ${r.status}: ${await r.text()}`);
+    return r.json();
+  },
+
+  async cloudflare(body) {
+    body = normalizedBody(body);
+    if (!process.env.CLOUDFLARE_API_TOKEN) throw new Error("CLOUDFLARE_API_TOKEN missing");
+    if (!process.env.CLOUDFLARE_ACCOUNT_ID) throw new Error("CLOUDFLARE_ACCOUNT_ID missing");
+
+    const model = process.env.CLOUDFLARE_MODEL || "@cf/zai-org/glm-4.7-flash";
+    const r = await fetch(
+      `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(process.env.CLOUDFLARE_ACCOUNT_ID)}/ai/v1/chat/completions`,
+      {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${process.env.CLOUDFLARE_API_TOKEN}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          ...body,
+          model
+        })
+      }
+    );
+    if (!r.ok) throw new Error(`Cloudflare ${r.status}: ${await r.text()}`);
     return r.json();
   },
 
