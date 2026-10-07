@@ -254,6 +254,7 @@ app.post("/v1/chat/completions", async (req, res) => {
     try {
       const wantsStream = req.body?.stream === true;
       const result = await fn(req.body || {});
+      console.log(`[router] provider=${name} success`);
 
       if (wantsStream) {
         const content = result?.choices?.[0]?.message?.content ?? "";
