@@ -6,7 +6,7 @@ dotenv.config();
 const app = express();
 app.use(express.json({ limit: "2mb" }));
 
-const order = (process.env.PROVIDER_ORDER || "groq,gemini,openrouter")
+const order = (process.env.PROVIDER_ORDER || "groq,gemini,mistral,openrouter")
   .split(",")
   .map(x => x.trim().toLowerCase())
   .filter(Boolean);
@@ -66,6 +66,23 @@ const providers = {
         finish_reason: "stop"
       }]
     };
+  },
+
+  async mistral(body) {
+    if (!process.env.MISTRAL_API_KEY) throw new Error("MISTRAL_API_KEY missing");
+    const r = await fetch("https://api.mistral.ai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${process.env.MISTRAL_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        ...body,
+        model: body.model || process.env.MISTRAL_MODEL || "mistral-small-latest"
+      })
+    });
+    if (!r.ok) throw new Error(`Mistral ${r.status}: ${await r.text()}`);
+    return r.json();
   },
 
   async openrouter(body) {
