@@ -50,9 +50,30 @@ function normalizedBody(body = {}) {
   return copy;
 }
 
+function trimMessagesForGroq(body = {}) {
+  const copy = { ...body };
+  const messages = Array.isArray(copy.messages) ? copy.messages : [];
+  const maxChars = Math.max(4000, Number(process.env.GROQ_MAX_INPUT_CHARS || 24000));
+  let used = 0;
+  const kept = [];
+
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i] || {};
+    const text = typeof m.content === "string" ? m.content : messageText(m.content);
+    const cost = text.length + 100;
+    if (kept.length && used + cost > maxChars) continue;
+    kept.push({ ...m, content: text });
+    used += cost;
+    if (used >= maxChars) break;
+  }
+
+  copy.messages = kept.reverse();
+  return copy;
+}
+
 const providers = {
   async groq(body) {
-    body = normalizedBody(body);
+    body = trimMessagesForGroq(normalizedBody(body));
     if (!process.env.GROQ_API_KEY) throw new Error("GROQ_API_KEY missing");
     const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
