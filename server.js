@@ -259,8 +259,12 @@ app.post("/v1/chat/completions", async (req, res) => {
 
     try {
       const wantsStream = req.body?.stream === true;
+      const toolsIn = Array.isArray(req.body?.tools) ? req.body.tools.length : 0;
       const result = await fn(req.body || {});
-      console.log(`[router] provider=${name} success`);
+      const toolCallsOut = Array.isArray(result?.choices?.[0]?.message?.tool_calls)
+        ? result.choices[0].message.tool_calls.length
+        : 0;
+      console.log(`[router] provider=${name} success tools_in=${toolsIn} tool_calls_out=${toolCallsOut} finish=${result?.choices?.[0]?.finish_reason || "unknown"}`);
 
       if (wantsStream) {
         const message = result?.choices?.[0]?.message || {};
