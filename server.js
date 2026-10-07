@@ -12,8 +12,20 @@ const order = (process.env.PROVIDER_ORDER || "groq,gemini,mistral,openrouter")
   .map(x => x.trim().toLowerCase())
   .filter(Boolean);
 
+function normalizedBody(body = {}) {
+  const copy = { ...body };
+  const requested = Number(copy.max_tokens ?? copy.max_completion_tokens);
+  const cap = Math.max(1, Number(process.env.MAX_OUTPUT_TOKENS || 2048));
+  if (!Number.isFinite(requested) || requested > cap) copy.max_tokens = cap;
+  else copy.max_tokens = Math.max(1, requested);
+  delete copy.max_completion_tokens;
+  copy.stream = false;
+  return copy;
+}
+
 const providers = {
   async groq(body) {
+    body = normalizedBody(body);
     if (!process.env.GROQ_API_KEY) throw new Error("GROQ_API_KEY missing");
     const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
@@ -31,6 +43,7 @@ const providers = {
   },
 
   async gemini(body) {
+    body = normalizedBody(body);
     if (!process.env.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY missing");
     const model = process.env.GEMINI_MODEL || "gemini-3.5-flash";
     const contents = (body.messages || []).map(m => ({
@@ -70,6 +83,7 @@ const providers = {
   },
 
   async mistral(body) {
+    body = normalizedBody(body);
     if (!process.env.MISTRAL_API_KEY) throw new Error("MISTRAL_API_KEY missing");
     const r = await fetch("https://api.mistral.ai/v1/chat/completions", {
       method: "POST",
@@ -87,6 +101,7 @@ const providers = {
   },
 
   async openrouter(body) {
+    body = normalizedBody(body);
     if (!process.env.OPENROUTER_API_KEY) throw new Error("OPENROUTER_API_KEY missing");
     const headers = {
       "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
