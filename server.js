@@ -124,6 +124,25 @@ app.get("/health", (_req, res) => {
   res.json({ ok: true, providers: order });
 });
 
+app.get("/v1/models", (req, res) => {
+  if (!process.env.ROUTER_API_KEY) {
+    return res.status(503).json({ error: "Router authentication is not configured" });
+  }
+  if (!hasValidRouterKey(req)) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  res.json({
+    object: "list",
+    data: [{
+      id: "starnet-router",
+      object: "model",
+      created: 0,
+      owned_by: "starnet-router"
+    }]
+  });
+});
+
 app.post("/v1/chat/completions", async (req, res) => {
   if (!process.env.ROUTER_API_KEY) {
     return res.status(503).json({ error: "Router authentication is not configured" });
