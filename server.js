@@ -23,7 +23,7 @@ const providers = {
       },
       body: JSON.stringify({
         ...body,
-        model: process.env.GROQ_MODEL || "llama-3.3-70b-versatile"
+        model: process.env.GROQ_MODEL || "openai/gpt-oss-20b"
       })
     });
     if (!r.ok) throw new Error(`Groq ${r.status}: ${await r.text()}`);
@@ -32,7 +32,7 @@ const providers = {
 
   async gemini(body) {
     if (!process.env.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY missing");
-    const model = process.env.GEMINI_MODEL || "gemini-2.0-flash";
+    const model = process.env.GEMINI_MODEL || "gemini-3.5-flash";
     const contents = (body.messages || []).map(m => ({
       role: m.role === "assistant" ? "model" : "user",
       parts: [{ text: typeof m.content === "string" ? m.content : JSON.stringify(m.content) }]
@@ -100,7 +100,7 @@ const providers = {
       headers,
       body: JSON.stringify({
         ...body,
-        model: process.env.OPENROUTER_MODEL || "meta-llama/llama-3.3-70b-instruct:free"
+        model: process.env.OPENROUTER_MODEL || "openrouter/free"
       })
     });
     if (!r.ok) throw new Error(`OpenRouter ${r.status}: ${await r.text()}`);
