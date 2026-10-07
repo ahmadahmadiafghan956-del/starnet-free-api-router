@@ -186,7 +186,12 @@ app.post("/v1/chat/completions", async (req, res) => {
         router_provider: name
       });
     } catch (err) {
-      errors.push({ provider: name, error: String(err?.message || err).slice(0, 500) });
+      const safeError = String(err?.message || err)
+        .replace(/(key=)[^&\\s]+/gi, "$1[REDACTED]")
+        .replace(/(Bearer\\s+)[A-Za-z0-9._-]+/gi, "$1[REDACTED]")
+        .slice(0, 500);
+      console.error(`[router] provider=${name} failed: ${safeError}`);
+      errors.push({ provider: name, error: safeError });
     }
   }
 
