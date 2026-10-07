@@ -97,6 +97,39 @@ function compactToolsForProvider(body = {}, limit = 12) {
   return copy;
 }
 
+function geminiSchema(schema) {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
+    return { type: "string" };
+  }
+
+  let type = schema.type;
+  if (Array.isArray(type)) type = type.find(x => x !== "null") || "string";
+  if (!type) {
+    if (schema.properties) type = "object";
+    else if (schema.items) type = "array";
+    else type = "string";
+  }
+
+  const out = { type: String(type).toLowerCase() };
+  if (schema.description) out.description = String(schema.description);
+  if (Array.isArray(schema.enum) && schema.enum.length) out.enum = schema.enum.map(String);
+
+  if (out.type === "object") {
+    out.properties = {};
+    for (const [key, value] of Object.entries(schema.properties || {})) {
+      out.properties[key] = geminiSchema(value);
+    }
+    if (Array.isArray(schema.required)) {
+      const valid = schema.required.filter(k => Object.prototype.hasOwnProperty.call(out.properties, k));
+      if (valid.length) out.required = valid;
+    }
+  } else if (out.type === "array") {
+    out.items = geminiSchema(schema.items || { type: "string" });
+  }
+
+  return out;
+}
+
 function trimMessagesForGroq(body = {}) {
   const copy = { ...body };
   const messages = Array.isArray(copy.messages) ? copy.messages : [];
@@ -183,7 +216,7 @@ const providers = {
           .map(t => ({
             name: t.function.name,
             ...(t.function.description ? { description: t.function.description } : {}),
-            parameters: t.function.parameters || { type: "object", properties: {} }
+            parameters: geminiSchema(t.function.parameters || { type: "object", properties: {} })
           }))
       : [];
 
@@ -193,7 +226,10 @@ const providers = {
         ...(body.temperature != null ? { temperature: body.temperature } : {}),
         ...(body.max_tokens != null ? { maxOutputTokens: body.max_tokens } : {})
       },
-      ...(functionDeclarations.length ? { tools: [{ functionDeclarations }] } : {})
+      ...(functionDeclarations.length ? { tools: [{ functionDeclarations }] } : {}),
+      ...(functionDeclarations.length && body.tool_choice === "required"
+        ? { toolConfig: { functionCallingConfig: { mode: "ANY" } } }
+        : {})
     };
 
     const r = await fetch(
@@ -336,8 +372,14 @@ app.post("/v1/chat/completions", async (req, res) => {
 
     try {
       const wantsStream = req.body?.stream === true;
-      const toolsIn = Array.isArray(req.body?.tools) ? req.body.tools.length : 0;
-      const result = await fn(req.body || {});
+      const originalToolsIn = Array.isArray(req.body?.tools) ? req.body.tools.length : 0;
+      let providerBody = req.body || {};
+      if (mustUseTool && originalToolsIn > 0) {
+        providerBody = compactToolsForProvider(providerBody, Number(process.env.MAX_ROUTED_TOOLS || 12));
+        providerBody = { ...providerBody, tool_choice: "required" };
+      }
+      const toolsIn = Array.isArray(providerBody?.tools) ? providerBody.tools.length : 0;
+      const result = await fn(providerBody);
       const toolCallsOut = Array.isArray(result?.choices?.[0]?.message?.tool_calls)
         ? result.choices[0].message.tool_calls.length
         : 0;
@@ -349,7 +391,7 @@ app.post("/v1/chat/completions", async (req, res) => {
         toolNames.some(toolName => returnedText.includes(toolName));
       const looksLikeSerializedToolCall = toolsIn > 0 && toolCallsOut === 0 &&
         /<tool_call>|<\/tool_call>|<arg_value>|<\/arg_value>/i.test(returnedText);
-      console.log(`[router] provider=${name} success tools_in=${toolsIn} tool_calls_out=${toolCallsOut} finish=${result?.choices?.[0]?.finish_reason || "unknown"}`);
+      console.log(`[router] provider=${name} success tools_in=${toolsIn}/${originalToolsIn} tool_calls_out=${toolCallsOut} finish=${result?.choices?.[0]?.finish_reason || "unknown"}`);
       if (looksLikeSerializedToolCall || mentionsKnownTool) {
         throw new Error("Provider described/serialized a tool call as text instead of structured tool_calls");
       }
