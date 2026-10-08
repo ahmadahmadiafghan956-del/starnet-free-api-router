@@ -589,3 +589,37 @@ const port = Number(process.env.PORT || 3000);
 app.listen(port, () => {
   console.log(`StarNet API router listening on port ${port}`);
 });
+
+
+// One-time account quota diagnostic. No secrets, response body, or user prompts logged.
+(async () => {
+  if (!process.env.MISTRAL_API_KEY) {console.log("[mistral-quota-check] no_key");return;}
+  try {
+    const response = await fetch("https://api.mistral.ai/v1/chat/completions", {
+      method: "POST",
+      headers: {"Authorization":"Bearer "+process.env.MISTRAL_API_KEY,"Content-Type":"application/json"},
+      body: JSON.stringify({model:"ministral-3b-2512",messages:[{role:"user",content:"Say OK"}],max_tokens:8}),
+      signal:AbortSignal.timeout(12000)
+    });
+    let category="none";
+    if(!response.ok) {
+      const payload=await response.text();
+      const text=payload.toLowerCase();
+      if(text.includes("tokens per month")||text.includes("monthly")||text.includes("month"))category="monthly_limit";
+      else if(text.includes("tokens per minute")||text.includes("tpm"))category="tokens_per_minute";
+      else if(text.includes("requests per second")||text.includes("rps"))category="requests_per_second";
+      else if(text.includes("balance")||text.includes("credits")||text.includes("billing"))category="billing_or_credit";
+      else if(text.includes("quota"))category="quota";
+      else if(text.includes("rate limit")||text.includes("too many"))category="rate_limit";
+      else if(text.includes("model"))category="model_restriction";
+      else if(text.includes("access"))category="access_restriction";
+      else category="unclassified";
+    } else {
+      const data=await response.json();
+      category=data?.choices?.[0]?.message?"valid_chat":"invalid_result";
+    }
+    console.log("[mistral-quota-check] status="+response.status+" category="+category);
+  }catch(e) {
+    console.log("[mistral-quota-check] network_exception="+String(e?.name||"unknown").replace(/[^a-zA-Z]/g,"").slice(0,30));
+  }
+})();
