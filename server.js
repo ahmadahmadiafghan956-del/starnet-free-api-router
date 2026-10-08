@@ -456,7 +456,7 @@ app.post("/v1/chat/completions", async (req, res) => {
   const errors = [];
   const mustUseTool = explicitToolIntent(req.body || {});
   const requestOrder = mustUseTool
-    ? ["gemini", ...order.filter(name => name !== "gemini")]
+    ? (order.includes("gemini") ? ["gemini", ...order.filter(name => name !== "gemini")] : order)
     : order;
 
   for (const name of requestOrder) {
