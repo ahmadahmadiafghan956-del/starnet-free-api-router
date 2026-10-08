@@ -210,7 +210,7 @@ const stagedApiProviders = {
   fireworks: { endpoint: "https://api.fireworks.ai/inference/v1", key: "FIREWORKS_API_KEY", model: "FIREWORKS_MODEL" },
   cerebras: { endpoint: "https://api.cerebras.ai/v1", key: "CEREBRAS_API_KEY", model: "CEREBRAS_MODEL", fallback: "gpt-oss-120b" },
   together: { endpoint: "https://api.together.ai/v1", key: "TOGETHER_API_KEY", model: "TOGETHER_MODEL" },
-  cohere: { endpoint: "https://api.cohere.ai/compatibility/v1", key: "COHERE_API_KEY", model: "COHERE_MODEL" }
+  cohere: { endpoint: "https://api.cohere.ai/compatibility/v1", key: "COHERE_API_KEY", model: "COHERE_MODEL", fallback: "command-a-03-2025" }
 };
 
 async function callStagedApiProvider(name, body) {
@@ -223,7 +223,7 @@ async function callStagedApiProvider(name, body) {
   const response = await fetch(config.endpoint + "/chat/completions", {
     method: "POST",
     headers: { Authorization: "Bearer " + key, "Content-Type": "application/json" },
-    body: JSON.stringify({ ...normalizedBody(body), model }),
+    body: JSON.stringify({ ...compactToolsForProvider({ ...normalizedBody(body), max_tokens: Math.min(256, Number(body?.max_tokens || 256)) }, name === "cohere" ? 4 : 12), model }),
     signal: AbortSignal.timeout(15000)
   });
   if (!response.ok) throw new Error(name + " HTTP " + response.status);
