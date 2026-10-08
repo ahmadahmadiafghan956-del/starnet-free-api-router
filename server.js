@@ -205,7 +205,38 @@ function setProviderCooldown(name, error) {
   if (ms > 0) providerCooldowns.set(name, Date.now() + Math.min(ms, 24 * 60 * 60 * 1000));
 }
 
+
+const stagedApiProviders = {
+  fireworks: { endpoint: "https://api.fireworks.ai/inference/v1", key: "FIREWORKS_API_KEY", model: "FIREWORKS_MODEL" },
+  cerebras: { endpoint: "https://api.cerebras.ai/v1", key: "CEREBRAS_API_KEY", model: "CEREBRAS_MODEL", fallback: "gpt-oss-120b" },
+  together: { endpoint: "https://api.together.ai/v1", key: "TOGETHER_API_KEY", model: "TOGETHER_MODEL" },
+  cohere: { endpoint: "https://api.cohere.ai/compatibility/v1", key: "COHERE_API_KEY", model: "COHERE_MODEL" },
+  nvidia: { endpoint: "https://integrate.api.nvidia.com/v1", key: "NVIDIA_API_KEY", model: "NVIDIA_MODEL" }
+};
+
+async function callStagedApiProvider(name, body) {
+  const config = stagedApiProviders[name];
+  if (!config) throw new Error("Unknown staged provider");
+  // A staged provider is not eligible for auto-routing until explicitly added to PROVIDER_ORDER.
+  const key = process.env[config.key];
+  const model = process.env[config.model] || config.fallback;
+  if (!key || !model) throw new Error(name + " is unconfigured");
+  const response = await fetch(config.endpoint + "/chat/completions", {
+    method: "POST",
+    headers: { Authorization: "Bearer " + key, "Content-Type": "application/json" },
+    body: JSON.stringify({ ...normalizedBody(body), model }),
+    signal: AbortSignal.timeout(15000)
+  });
+  if (!response.ok) throw new Error(name + " HTTP " + response.status);
+  return response.json();
+}
+
 const providers = {
+  async fireworks(body) { return callStagedApiProvider("fireworks", body); },
+  async cerebras(body) { return callStagedApiProvider("cerebras", body); },
+  async together(body) { return callStagedApiProvider("together", body); },
+  async cohere(body) { return callStagedApiProvider("cohere", body); },
+  async nvidia(body) { return callStagedApiProvider("nvidia", body); },
   async groq(body) {
     body = compactToolsForProvider(trimMessagesForGroq(normalizedBody(body)), Number(process.env.GROQ_MAX_TOOLS || 12));
     if (!process.env.GROQ_API_KEY) throw new Error("GROQ_API_KEY missing");
