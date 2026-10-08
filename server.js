@@ -589,35 +589,45 @@ const port = Number(process.env.PORT || 3000);
 app.listen(port, () => {
   console.log(`StarNet API router listening on port ${port}`);
 });
-// Temporary one-request smoke test on start; only status is logged, never credentials.
+
+// Temporary diagnostic. Only statuses are logged; no key or model response content.
 (async () => {
-  if (!process.env.GITHUB_MODELS_TOKEN) {
-    console.log("[github-models-smoke] token_not_configured");
+  if (!process.env.MISTRAL_API_KEY) {
+    console.log("[mistral-smoke] missing_key");
     return;
   }
-  try {
-    const response = await fetch("https://models.github.ai/inference/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${process.env.GITHUB_MODELS_TOKEN}`,
-        "Content-Type": "application/json",
-        Accept: "application/vnd.github+json"
-      },
-      body: JSON.stringify({
-        model: process.env.GITHUB_MODELS_MODEL || "openai/gpt-4.1-mini",
-        messages: [{ role: "user", content: "Reply OK." }],
-        max_tokens: 8
-      }),
-      signal: AbortSignal.timeout(12000)
-    });
-    if (!response.ok) {
-      console.log(`[github-models-smoke] http_${response.status}`);
-      return;
+  const call = async (isTool) => {
+    const body = {
+      model: "mistral-small-2603",
+      messages: [{role:"user",content: isTool ? "Call get_demo_status to check the demo service." : "Reply OK."}],
+      max_tokens: 80
+    };
+    if(isTool) {
+      body.tools=[{type:"function",function:{name:"get_demo_status",
+        description:"Gets a fictional service status (test only)",
+        parameters:{type:"object",properties:{service:{type:"string"}},required:["service"]}}}];
+      body.tool_choice="any";
     }
-    const json = await response.json();
-    console.log(`[github-models-smoke] ${json?.choices?.[0]?.message ? "success" : "invalid_response"}`);
-  } catch {
-    console.log("[github-models-smoke] request_error");
+    const response=await fetch("https://api.mistral.ai/v1/chat/completions",{
+      method:"POST",
+      headers:{Authorization:"Bearer "+process.env.MISTRAL_API_KEY,"Content-Type":"application/json"},
+      body:JSON.stringify(body),
+      signal:AbortSignal.timeout(15000)
+    });
+    if(!response.ok) return {status:response.status,ok:false};
+    const data=await response.json();
+    return {status:response.status,ok:isTool
+      ? data?.choices?.[0]?.message?.tool_calls?.some(c=>c?.function?.name==="get_demo_status")===true
+      : Boolean(data?.choices?.[0]?.message)};
+  };
+  try {
+    const chat=await call(false);
+    console.log("[mistral-smoke] chat_status="+chat.status+" valid="+chat.ok);
+    if(chat.status!==200) return;
+    const tool=await call(true);
+    console.log("[mistral-smoke] tool_status="+tool.status+" valid="+tool.ok);
+  }catch(e){
+    console.log("[mistral-smoke] request_error type="+String(e?.name||"unknown").slice(0,40)
+      +" code="+String(e?.cause?.code||"none").slice(0,40));
   }
 })();
-
