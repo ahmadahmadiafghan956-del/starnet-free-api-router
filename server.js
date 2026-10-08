@@ -598,7 +598,7 @@ app.listen(port, () => {
   }
   const call = async (isTool) => {
     const body = {
-      model: "mistral-small-2603",
+      model: "mistral-small-latest",
       messages: [{role:"user",content: isTool ? "Call get_demo_status to check the demo service." : "Reply OK."}],
       max_tokens: 80
     };
@@ -614,7 +614,17 @@ app.listen(port, () => {
       body:JSON.stringify(body),
       signal:AbortSignal.timeout(15000)
     });
-    if(!response.ok) return {status:response.status,ok:false};
+    if(!response.ok) {
+      let info={};
+      try {
+        const data=await response.json();
+        const error=data?.error || {};
+        const safe=(x)=>typeof x==="string" && /^[A-Za-z0-9_.-]{1,60}$/.test(x)?x:"unspecified";
+        info={code:safe(error.code),type:safe(error.type)};
+      } catch {}
+      const retryAfter=response.headers.get("retry-after");
+      return {status:response.status,ok:false,code:info.code||"unspecified",type:info.type||"unspecified",retryAfter:/^[0-9]{1,4}$/.test(retryAfter||"")?retryAfter:"unspecified"};
+    }
     const data=await response.json();
     return {status:response.status,ok:isTool
       ? data?.choices?.[0]?.message?.tool_calls?.some(c=>c?.function?.name==="get_demo_status")===true
@@ -622,7 +632,7 @@ app.listen(port, () => {
   };
   try {
     const chat=await call(false);
-    console.log("[mistral-smoke] chat_status="+chat.status+" valid="+chat.ok);
+    console.log("[mistral-smoke] chat_status="+chat.status+" valid="+chat.ok+" code="+(chat.code||"none")+" type="+(chat.type||"none")+" retry_after="+(chat.retryAfter||"none"));
     if(chat.status!==200) return;
     const tool=await call(true);
     console.log("[mistral-smoke] tool_status="+tool.status+" valid="+tool.ok);
