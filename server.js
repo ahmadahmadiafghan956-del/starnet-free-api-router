@@ -589,27 +589,3 @@ const port = Number(process.env.PORT || 3000);
 app.listen(port, () => {
   console.log(`StarNet API router listening on port ${port}`);
 });
-
-
-(async () => {
-  if (!process.env.MISTRAL_API_KEY) return console.log("[mistral-function-test] missing_key");
-  try {
-    const r = await fetch("https://api.mistral.ai/v1/chat/completions", {
-      method: "POST",
-      headers: {Authorization: "Bearer " + process.env.MISTRAL_API_KEY, "Content-Type": "application/json"},
-      body: JSON.stringify({
-        model: "ministral-3b-2512",
-        messages: [{role:"user",content:"Call the demo_check tool with item test."}],
-        tools: [{type:"function",function:{name:"demo_check",description:"Check a demo item",parameters:{type:"object",properties:{item:{type:"string"}},required:["item"]}}}],
-        tool_choice:"any",max_tokens:64
-      }),
-      signal: AbortSignal.timeout(12000)
-    });
-    if (!r.ok) return console.log("[mistral-function-test] status=" + r.status);
-    const data = await r.json();
-    const called = Array.isArray(data.choices?.[0]?.message?.tool_calls) && data.choices[0].message.tool_calls.some(x => x.function?.name === "demo_check");
-    console.log("[mistral-function-test] status=200 structured_call=" + called);
-  } catch (e) {
-    console.log("[mistral-function-test] exception=" + String(e.name||"unknown").replace(/[^a-z]/gi,""));
-  }
-})();
