@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node server.js"
+    "start": "node -e '(async()=>{const k=process.env.MISTRAL_API_KEY;console.log(\"[mistral-smoke] key_present=\"+Boolean(k));if(!k)return;const request=async(b,label)=>{try{const r=await fetch(\"https://api.mistral.ai/v1/chat/completions\",{method:\"POST\",headers:{Authorization:\"Bearer \"+k,\"Content-Type\":\"application/json\"},body:JSON.stringify({model:process.env.MISTRAL_MODEL||\"mistral-small-latest\",...b}),signal:AbortSignal.timeout(20000)});if(!r.ok){console.log(\"[mistral-smoke] \"+label+\" http_\"+r.status);return;}const j=await r.json();const m=j?.choices?.[0]?.message;const ok=label===\"chat\"?(typeof m?.content===\"string\"&&m.content.trim().length>0):(Array.isArray(m?.tool_calls)&&m.tool_calls.some(t=>t?.function?.name===\"check_router_status\"));console.log(\"[mistral-smoke] \"+label+\" \"+(ok?\"ok\":\"bad_response\"));}catch(e){console.log(\"[mistral-smoke] \"+label+\" failed_\"+String(e?.cause?.code||e?.name||\"unknown\").slice(0,50));}};await request({messages:[{role:\"user\",content:\"Reply with OK.\"}],max_tokens:24},\"chat\");await request({messages:[{role:\"user\",content:\"Call check_router_status for service starnet-router.\"}],tools:[{type:\"function\",function:{name:\"check_router_status\",description:\"Report a named service status.\",parameters:{type:\"object\",properties:{service:{type:\"string\"}},required:[\"service\"]}}}],tool_choice:\"any\",max_tokens:180},\"tool\");})()' && node server.js"
   },
   "dependencies": {
     "express": "^4.21.2",
