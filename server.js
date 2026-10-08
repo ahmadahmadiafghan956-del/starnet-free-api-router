@@ -425,6 +425,26 @@ app.get("/v1/models", (req, res) => {
   });
 });
 
+app.get("/health/github-models", async (req, res) => {
+  if (!process.env.ROUTER_API_KEY) return res.status(503).json({ ok: false, error: "Router authentication is not configured" });
+  if (!hasValidRouterKey(req)) return res.status(401).json({ ok: false, error: "Unauthorized" });
+  try {
+    const result = await providers.github({
+      messages: [{ role: "user", content: "Reply with exactly: OK" }],
+      max_tokens: 8,
+      stream: false
+    });
+    const text = String(result?.choices?.[0]?.message?.content || "").trim();
+    return res.json({ ok: true, provider: "github", model: result?.model || process.env.GITHUB_MODELS_MODEL || "openai/gpt-4.1-mini", responded: Boolean(text) });
+  } catch (err) {
+    const safeError = String(err?.message || err)
+      .replace(/(key=)[^&\\s]+/gi, "$1[REDACTED]")
+      .replace(/(Bearer\\s+)[A-Za-z0-9._-]+/gi, "$1[REDACTED]")
+      .slice(0, 500);
+    return res.status(502).json({ ok: false, provider: "github", error: safeError });
+  }
+});
+
 app.post("/v1/chat/completions", async (req, res) => {
   if (!process.env.ROUTER_API_KEY) {
     return res.status(503).json({ error: "Router authentication is not configured" });
