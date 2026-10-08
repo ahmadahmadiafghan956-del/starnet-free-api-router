@@ -620,15 +620,3 @@ app.listen(port, () => {
 });
 
 
-(async () => {
-  const key=process.env.COHERE_API_KEY;
-  if(!key||key==="REPLACE_WITH_YOUR_API_KEY")return console.log("[cohere-test] not_configured");
-  const url="https://api.cohere.ai/compatibility/v1/chat/completions";
-  const base={model:process.env.COHERE_MODEL||"command-a-03-2025",messages:[{role:"user",content:"Call demo_status with item test."}],max_tokens:72};
-  try {
-    const r=await fetch(url,{method:"POST",headers:{"Authorization":"Bearer "+key,"Content-Type":"application/json"},body:JSON.stringify({...base,tools:[{type:"function",function:{name:"demo_status",description:"Read demo status",parameters:{type:"object",properties:{item:{type:"string"}},required:["item"]}}}],tool_choice:"required"}),signal:AbortSignal.timeout(15000)});
-    if(!r.ok)return console.log("[cohere-test] status="+r.status);
-    const j=await r.json();
-    console.log("[cohere-test] status=200 structured="+Boolean(j?.choices?.[0]?.message?.tool_calls?.some(x=>x.function?.name==="demo_status")));
-  }catch(e){console.log("[cohere-test] exception="+String(e.name||"error").replace(/[^a-z]/gi,""));}
-})();
