@@ -631,3 +631,28 @@ app.listen(port, () => {
 });
 
 
+
+
+// COHERE_ONE_SHOT_ROUNDTRIP_TEST
+(async()=>{
+ try {
+   const callId="call_demo_1";
+   const body={
+     messages:[
+       {role:"system",content:"Use the provided read-only demo tool."},
+       {role:"user",content:"Check status of demo."},
+       {role:"assistant",content:null,tool_calls:[{id:callId,type:"function",function:{name:"demo_status",arguments:'{"service":"demo"}'}}]},
+       {role:"tool",tool_call_id:callId,content:'{"status":"online"}'},
+       {role:"user",content:"Call demo_status for final confirmation."}
+     ],
+     tools:[{type:"function",function:{name:"demo_status",description:"Check a demo service",parameters:{type:"object",properties:{service:{type:"string"}},required:["service"]}}}],
+     tool_choice:"required",max_tokens:48
+   };
+   const result=await providers.cohere(body);
+   const hasCall=Array.isArray(result?.choices?.[0]?.message?.tool_calls);
+   console.log("[cohere-roundtrip] success="+hasCall);
+ }catch(e) {
+   const status=String(e?.message||"").match(/HTTP (\\d+)/)?.[1]||"unknown";
+   console.log("[cohere-roundtrip] failed status="+status);
+ }
+})();
