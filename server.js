@@ -38,6 +38,8 @@ function normalizedBody(body = {}) {
       if (message?.name != null) clean.name = message.name;
       if (message?.tool_call_id != null) clean.tool_call_id = message.tool_call_id;
       if (Array.isArray(message?.tool_calls)) clean.tool_calls = message.tool_calls;
+      if (clean.role === "assistant" && clean.tool_calls?.length && !clean.content) clean.content = null;
+      if (clean.role === "assistant" && !clean.tool_calls?.length && !clean.content) clean.content = " ";
       return clean;
     });
   }
@@ -226,7 +228,16 @@ async function callStagedApiProvider(name, body) {
     body: JSON.stringify({ ...compactToolsForProvider({ ...normalizedBody(body), max_tokens: Math.min(256, Number(body?.max_tokens || 256)) }, name === "cohere" ? 4 : 12), model }),
     signal: AbortSignal.timeout(15000)
   });
-  if (!response.ok) throw new Error(name + " HTTP " + response.status);
+  if (!response.ok) {
+    const raw = await response.text();
+    let reason = "unspecified";
+    try {
+      const parsed = JSON.parse(raw);
+      reason = String(parsed.message || parsed.error?.message || parsed.error || "unspecified");
+    } catch {}
+    console.warn("[router] " + name + " HTTP " + response.status + " category=" + (/tool|function|schema/i.test(reason) ? "tool_schema" : /message|role|content/i.test(reason) ? "message_format" : "other"));
+    throw new Error(name + " HTTP " + response.status);
+  }
   return response.json();
 }
 
