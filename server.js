@@ -589,3 +589,35 @@ const port = Number(process.env.PORT || 3000);
 app.listen(port, () => {
   console.log(`StarNet API router listening on port ${port}`);
 });
+// Temporary one-request smoke test on start; only status is logged, never credentials.
+(async () => {
+  if (!process.env.GITHUB_MODELS_TOKEN) {
+    console.log("[github-models-smoke] token_not_configured");
+    return;
+  }
+  try {
+    const response = await fetch("https://models.github.ai/inference/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.GITHUB_MODELS_TOKEN}`,
+        "Content-Type": "application/json",
+        Accept: "application/vnd.github+json"
+      },
+      body: JSON.stringify({
+        model: process.env.GITHUB_MODELS_MODEL || "openai/gpt-4.1-mini",
+        messages: [{ role: "user", content: "Reply OK." }],
+        max_tokens: 8
+      }),
+      signal: AbortSignal.timeout(12000)
+    });
+    if (!response.ok) {
+      console.log(`[github-models-smoke] http_${response.status}`);
+      return;
+    }
+    const json = await response.json();
+    console.log(`[github-models-smoke] ${json?.choices?.[0]?.message ? "success" : "invalid_response"}`);
+  } catch {
+    console.log("[github-models-smoke] request_error");
+  }
+})();
+
