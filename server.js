@@ -7,7 +7,7 @@ dotenv.config();
 const app = express();
 app.use(express.json({ limit: "2mb" }));
 
-const order = (process.env.PROVIDER_ORDER || "groq,cloudflare,gemini,mistral,openrouter")
+const order = (process.env.PROVIDER_ORDER || "groq,cloudflare,gemini,mistral,openrouter,github")
   .split(",")
   .map(x => x.trim().toLowerCase())
   .filter(Boolean);
@@ -338,6 +338,26 @@ const providers = {
       })
     });
     if (!r.ok) throw new Error(`Mistral ${r.status}: ${await r.text()}`);
+    return r.json();
+  },
+
+  async github(body) {
+    body = normalizedBody(body);
+    if (!process.env.GITHUB_MODELS_TOKEN) throw new Error("GITHUB_MODELS_TOKEN missing");
+    body = compactToolsForProvider(body, Number(process.env.GITHUB_MAX_TOOLS || 12));
+    const r = await fetch("https://models.github.ai/inference/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${process.env.GITHUB_MODELS_TOKEN}`,
+        "Content-Type": "application/json",
+        "Accept": "application/vnd.github+json"
+      },
+      body: JSON.stringify({
+        ...body,
+        model: process.env.GITHUB_MODELS_MODEL || "openai/gpt-4.1-mini"
+      })
+    });
+    if (!r.ok) throw new Error(`GitHub Models ${r.status}: ${await r.text()}`);
     return r.json();
   },
 
