@@ -97,6 +97,33 @@ function compactToolsForProvider(body = {}, limit = 12) {
   return copy;
 }
 
+function attemptedMissingTool(error) {
+  const text = String(error?.message || error || "");
+  const patterns = [
+    /attempted to call tool ['"`]([^'"`]+)['"`]/i,
+    /tool ['"`]([^'"`]+)['"`] which was not in request\.tools/i
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) return match[1];
+  }
+  return "";
+}
+
+function forceToolIntoBody(originalBody = {}, routedBody = {}, toolName, limit = 12) {
+  const allTools = Array.isArray(originalBody.tools) ? originalBody.tools : [];
+  const missingTool = allTools.find(t => t?.function?.name === toolName);
+  if (!missingTool) return null;
+
+  const routedTools = Array.isArray(routedBody.tools) ? [...routedBody.tools] : [];
+  if (routedTools.some(t => t?.function?.name === toolName)) return null;
+
+  const safeLimit = Math.max(1, Number(limit) || 12);
+  const nextTools = routedTools.slice(0, Math.max(0, safeLimit - 1));
+  nextTools.push(missingTool);
+  return { ...routedBody, tools: nextTools };
+}
+
 function geminiSchema(schema) {
   if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
     return { type: "string" };
@@ -412,7 +439,26 @@ app.post("/v1/chat/completions", async (req, res) => {
         providerBody = { ...providerBody, tool_choice: "required" };
       }
       const toolsIn = Array.isArray(providerBody?.tools) ? providerBody.tools.length : 0;
-      const result = await fn(providerBody);
+      let result;
+      try {
+        result = await fn(providerBody);
+      } catch (firstError) {
+        const missingToolName = attemptedMissingTool(firstError);
+        const retryBody = missingToolName
+          ? forceToolIntoBody(
+              req.body || {},
+              providerBody,
+              missingToolName,
+              Number(process.env.MAX_ROUTED_TOOLS || 12)
+            )
+          : null;
+
+        if (!retryBody) throw firstError;
+
+        console.warn(`[router] provider=${name} retrying once with requested missing tool=${missingToolName}`);
+        result = await fn(retryBody);
+        providerBody = retryBody;
+      }
       const toolCallsOut = Array.isArray(result?.choices?.[0]?.message?.tool_calls)
         ? result.choices[0].message.tool_calls.length
         : 0;
