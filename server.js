@@ -210,8 +210,7 @@ const stagedApiProviders = {
   fireworks: { endpoint: "https://api.fireworks.ai/inference/v1", key: "FIREWORKS_API_KEY", model: "FIREWORKS_MODEL" },
   cerebras: { endpoint: "https://api.cerebras.ai/v1", key: "CEREBRAS_API_KEY", model: "CEREBRAS_MODEL", fallback: "gpt-oss-120b" },
   together: { endpoint: "https://api.together.ai/v1", key: "TOGETHER_API_KEY", model: "TOGETHER_MODEL" },
-  cohere: { endpoint: "https://api.cohere.ai/compatibility/v1", key: "COHERE_API_KEY", model: "COHERE_MODEL" },
-  nvidia: { endpoint: "https://integrate.api.nvidia.com/v1", key: "NVIDIA_API_KEY", model: "NVIDIA_MODEL" }
+  cohere: { endpoint: "https://api.cohere.ai/compatibility/v1", key: "COHERE_API_KEY", model: "COHERE_MODEL" }
 };
 
 async function callStagedApiProvider(name, body) {
@@ -236,7 +235,6 @@ const providers = {
   async cerebras(body) { return callStagedApiProvider("cerebras", body); },
   async together(body) { return callStagedApiProvider("together", body); },
   async cohere(body) { return callStagedApiProvider("cohere", body); },
-  async nvidia(body) { return callStagedApiProvider("nvidia", body); },
   async groq(body) {
     body = compactToolsForProvider(trimMessagesForGroq(normalizedBody(body)), Number(process.env.GROQ_MAX_TOOLS || 12));
     if (!process.env.GROQ_API_KEY) throw new Error("GROQ_API_KEY missing");
