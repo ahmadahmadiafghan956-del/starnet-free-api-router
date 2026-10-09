@@ -181,75 +181,109 @@ function trimMessagesForGroq(body = {}) {
 }
 
 const providerCooldowns = new Map();
-
-function providerCoolingDown(name) {
-  const until = providerCooldowns.get(name) || 0;
-  if (until <= Date.now()) {
-    providerCooldowns.delete(name);
-    return false;
-  }
-  return true;
-}
-
-function setProviderCooldown(name, error) {
-  const text = String(error?.message || error || "").toLowerCase();
-  let ms = 0;
-  if (/\b402\b|out of credit|insufficient credit|more credits/.test(text)) ms = 30 * 60 * 1000;
-  else if (/\b429\b|quota exceeded|rate limit/.test(text)) {
-    const retry = text.match(/retry(?: in| after)?\s*(\d+(?:\.\d+)?)\s*(s|m|h)/i);
-    if (retry) {
-      const n = Number(retry[1]);
-      ms = n * (retry[2].toLowerCase() === "h" ? 3600000 : retry[2].toLowerCase() === "m" ? 60000 : 1000);
-    } else {
-      ms = 60 * 1000;
-    }
-  } else if (/\b503\b|unavailable|high demand/.test(text)) ms = 30 * 1000;
-  if (ms > 0) providerCooldowns.set(name, Date.now() + Math.min(ms, 24 * 60 * 60 * 1000));
-}
-
-
-// Multiple authorized credentials are selectable per request; a rate-limit failure
-// falls through to the next provider, never retries another key on the same request.
-const providerTimeoutMs = Math.max(5000, Math.min(60000, Number(process.env.PROVIDER_TIMEOUT_MS) || 20000));
-const maxProviderAttempts = Math.max(1, Math.min(6, Number(process.env.MAX_PROVIDER_ATTEMPTS) || 4));
 const credentialCooldowns = new Map();
-
+const credentialCounters = new Map();
+const credentialStats = new Map();
+const providerTimeoutMs = Math.max(5000, Math.min(60000, Number(process.env.PROVIDER_TIMEOUT_MS) || 16000));
+const maxProviderAttempts = Math.max(1, Math.min(12, Number(process.env.MAX_PROVIDER_ATTEMPTS) || 6));
+const maxKeysPerProvider = Math.max(1, Math.min(5, Number(process.env.MAX_KEYS_PER_PROVIDER) || 2));
+const totalTimeoutMs = Math.max(providerTimeoutMs, Math.min(90000, Number(process.env.ROUTER_TIMEOUT_MS) || 45000));
+const MAX_COOLDOWN_MS = 86400000;
+const credentialEnvNames = {groq:"GROQ_API_KEY",gemini:"GEMINI_API_KEY",mistral:"MISTRAL_API_KEY",cohere:"COHERE_API_KEY",openrouter:"OPENROUTER_API_KEY",cloudflare:"CLOUDFLARE_API_TOKEN"};
+function validCredentialValue(v) {
+  return typeof v === "string" && !!v.trim() && !["REPLACE_ME","YOUR_API_KEY","PASTE_KEY_HERE"].includes(v.trim().toUpperCase());
+}
+function configuredCredentialSlots(provider) {
+  const base = credentialEnvNames[provider];
+  if (!base) {
+    const special = {github:"GITHUB_MODELS_TOKEN",fireworks:"FIREWORKS_API_KEY",cerebras:"CEREBRAS_API_KEY",together:"TOGETHER_API_KEY"};
+    return validCredentialValue(process.env[special[provider]]) ? [special[provider]] : [];
+  }
+  const numbered = Object.keys(process.env).filter(n => n.startsWith(base+"_") && /^\d+$/.test(n.slice(base.length+1)))
+    .sort((a,b) => Number(a.slice(base.length+1))-Number(b.slice(base.length+1)));
+  const seen = new Set();
+  return [base,...numbered].filter(slot => {
+    const value = process.env[slot];
+    if (!validCredentialValue(value) || seen.has(value)) return false;
+    if (provider === "cloudflare" && !validCredentialValue(process.env[slot.replace("CLOUDFLARE_API_TOKEN","CLOUDFLARE_ACCOUNT_ID")])) return false;
+    seen.add(value);
+    return true;
+  });
+}
+function remainingMs(until) { return Math.max(0,(until||0)-Date.now()); }
+function providerCoolingDown(name) { return remainingMs(providerCooldowns.get(name)) > 0; }
+function availableCredentialSlots(provider) { return configuredCredentialSlots(provider).filter(slot => remainingMs(credentialCooldowns.get(slot))===0); }
+function selectProviderCredential(provider) {
+  const slots=configuredCredentialSlots(provider);
+  const cursor=credentialCounters.get(provider)||0;
+  credentialCounters.set(provider,cursor+1);
+  for (let n=0;n<slots.length;n++) {
+    const slot=slots[(cursor+n)%slots.length];
+    if (remainingMs(credentialCooldowns.get(slot))>0) continue;
+    const selected={value:process.env[slot],slot};
+    if(provider==="cloudflare") selected.accountId=process.env[slot.replace("CLOUDFLARE_API_TOKEN","CLOUDFLARE_ACCOUNT_ID")];
+    return selected;
+  }
+  return null;
+}
+function parseDelayMs(value) {
+  if(value==null) return 0;
+  const input=String(value).trim();
+  if(/^\d+(?:\.\d+)?$/.test(input)) return Number(input)*1000;
+  if(/^(?:\d+(?:\.\d+)?\s*(?:ms|s|sec(?:onds?)?|m|min(?:utes?)?|h|hours?|d|days?)\s*)+$/i.test(input)) {
+    const scale={ms:1,s:1000,sec:1000,second:1000,seconds:1000,m:60000,min:60000,minute:60000,minutes:60000,h:3600000,hour:3600000,hours:3600000,d:86400000,day:86400000,days:86400000};
+    let result=0;for(const hit of input.matchAll(/(\d+(?:\.\d+)?)\s*(ms|sec(?:onds?)?|s|min(?:utes?)?|m|hours?|h|days?|d)/gi)) result+=Number(hit[1])*(scale[hit[2].toLowerCase()]||1000);
+    return result;
+  }
+  const date=Date.parse(input);
+  return Number.isFinite(date)?Math.max(0,date-Date.now()):0;
+}
+async function providerResponseError(provider,response) {
+  let raw="";try{raw=String(await response.text()).slice(0,4096)}catch{}
+  let body={};try{body=JSON.parse(raw)}catch{}
+  const part=body?.error||{};
+  const message=String(part.message||body?.message||"");
+  const detail=Array.isArray(part.details)?part.details.find(x=>x?.retryDelay)?.retryDelay:null;
+  const hdr=parseDelayMs(response.headers?.get("retry-after"));
+  const quotaReset=parseDelayMs(response.headers?.get("x-ratelimit-reset-requests"))||parseDelayMs(response.headers?.get("x-ratelimit-reset-tokens"));
+  const match=message.match(/retry(?: again)?(?: in| after)\s*(\d+(?:\.\d+)?\s*(?:ms|s|m|min|h|hours?))/i);
+  const err=new Error(provider+" HTTP "+response.status);
+  err.status=response.status;
+  err.retryAfterMs=hdr||parseDelayMs(detail)||parseDelayMs(match?.[1])||quotaReset;
+  err.dailyQuota=/\b(daily|per.day|per day|requests.per.day|rpd|24.hours)\b/i.test(message);
+  return err;
+}
 function credentialCooldownDuration(error) {
-  const message = String(error?.message || error || "").toLowerCase();
-  if (/\b401\b|\b403\b/.test(message)) return 10 * 60 * 1000;
-  if (/\b402\b|out of credit|insufficient credit/.test(message)) return 30 * 60 * 1000;
-  if (/\b429\b|quota exceeded|rate limit/.test(message)) return 60 * 1000;
+  const status=Number(error?.status)||Number(String(error?.message||"").match(/\b(401|402|403|429)\b/)?.[1]);
+  if([401,402,403].includes(status)) return MAX_COOLDOWN_MS;
+  if(status===429) return Math.max(1000,Math.min(MAX_COOLDOWN_MS,error?.retryAfterMs||(error?.dailyQuota?MAX_COOLDOWN_MS:65000)));
   return 0;
 }
-function coolDownCredential(slot, error) {
-  if (!slot) return false;
-  const ms = credentialCooldownDuration(error);
-  if (!ms) return false;
-  credentialCooldowns.set(slot, Date.now() + ms);
+function coolDownCredential(slot,error) {
+  if(!slot) return false;
+  const duration=credentialCooldownDuration(error);
+  if(!duration) return false;
+  credentialCooldowns.set(slot,Date.now()+duration);
   return true;
 }
-function credentialIsAvailable(slot) {
-  const until = credentialCooldowns.get(slot) || 0;
-  if (until > Date.now()) return false;
-  credentialCooldowns.delete(slot);
-  return true;
+function setProviderCooldown(name,error) {
+  const status=Number(error?.status)||Number(String(error?.message||"").match(/\b(400|404|429|500|502|503|504)\b/)?.[1]);
+  const ms=[400,404].includes(status)?120000:status===429?Math.max(65000,error?.retryAfterMs||0):status>=500&&status<=599?30000:0;
+  if(ms) providerCooldowns.set(name,Date.now()+Math.min(MAX_COOLDOWN_MS,ms));
 }
-const credentialCounters = new Map();
-function selectProviderCredential(provider, legacyName) {
-  const base = provider.toUpperCase() + "_API_KEY_";
-  const numbered = Object.keys(process.env)
-    .filter(name => name.startsWith(base) && /^\d+$/.test(name.slice(base.length)) && process.env[name])
-    .sort((a, b) => Number(a.slice(base.length)) - Number(b.slice(base.length)));
-  // Include legacy and numbered credentials, without duplicate values.
-  const names = [legacyName, ...numbered]
-    .filter(name => process.env[name] && process.env[name] !== "REPLACE_ME")
-    .filter((name, index, all) => all.findIndex(other => process.env[other] === process.env[name]) === index)
-    .filter(credentialIsAvailable);
-  if (!names.length) return null;
-  const index = credentialCounters.get(provider) || 0;
-  credentialCounters.set(provider, index + 1);
-  const slot = names[index % names.length];
-  return { value: process.env[slot], slot };
+function recordStat(slot,kind,tokens) {
+  if(!slot) return;
+  const stat=credentialStats.get(slot)||{success:0,failed:0,tokensReported:0};
+  if(kind==="success"){stat.success++;stat.tokensReported+=Math.max(0,Number(tokens)||0)}
+  if(kind==="failed")stat.failed++;
+  credentialStats.set(slot,stat);
+}
+function secondsUntilAnyCredential() {
+  let nearest=Infinity;
+  for(const name of order) for(const slot of configuredCredentialSlots(name)) {
+    nearest=Math.min(nearest,Math.max(remainingMs(providerCooldowns.get(name)),remainingMs(credentialCooldowns.get(slot))));
+  }
+  return Number.isFinite(nearest)?Math.ceil(nearest/1000):null;
 }
 
 const stagedApiProviders = {
