@@ -306,7 +306,7 @@ async function callStagedApiProvider(name, body, context = {}) {
     method: "POST",
     headers: { Authorization: "Bearer " + key, "Content-Type": "application/json" },
     body: JSON.stringify({ ...compactToolsForProvider({ ...normalizedBody(body), max_tokens: Math.min(256, Number(body?.max_tokens || 256)) }, name === "cohere" ? 4 : 12), model }),
-    signal: AbortSignal.timeout(15000)
+    signal: AbortSignal.timeout(Math.max(1000, Math.min(15000, (context.deadline || (Date.now() + 15000)) - Date.now())))
   });
   if (!response.ok) {
     throw await providerResponseError(name, response);
@@ -334,7 +334,7 @@ const providers = {
         ...body,
         model: process.env.GROQ_MODEL || "openai/gpt-oss-20b"
       }),
-      signal: AbortSignal.timeout(providerTimeoutMs)
+      signal: AbortSignal.timeout(Math.max(1000, Math.min(providerTimeoutMs, (context.deadline || (Date.now() + providerTimeoutMs)) - Date.now())))
     });
     if (!r.ok) throw await providerResponseError("groq", r);
     return r.json();
@@ -365,7 +365,7 @@ const providers = {
           ...(Array.isArray(body.tools) ? { tools: body.tools } : {}),
           ...(body.tool_choice != null ? { tool_choice: body.tool_choice } : {})
         }),
-        signal: AbortSignal.timeout(providerTimeoutMs)
+        signal: AbortSignal.timeout(Math.max(1000, Math.min(providerTimeoutMs, (context.deadline || (Date.now() + providerTimeoutMs)) - Date.now())))
       }
     );
     if (!r.ok) throw await providerResponseError("cloudflare", r);
@@ -412,7 +412,7 @@ const providers = {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(requestBody),
-        signal: AbortSignal.timeout(providerTimeoutMs)
+        signal: AbortSignal.timeout(Math.max(1000, Math.min(providerTimeoutMs, (context.deadline || (Date.now() + providerTimeoutMs)) - Date.now())))
       }
     );
 
@@ -459,13 +459,13 @@ const providers = {
         ...body,
         model: process.env.MISTRAL_MODEL || "mistral-small-latest"
       }),
-      signal: AbortSignal.timeout(providerTimeoutMs)
+      signal: AbortSignal.timeout(Math.max(1000, Math.min(providerTimeoutMs, (context.deadline || (Date.now() + providerTimeoutMs)) - Date.now())))
     });
     if (!r.ok) throw await providerResponseError("mistral", r);
     return r.json();
   },
 
-  async github(body) {
+  async github(body, context = {}) {
     body = normalizedBody(body);
     if (!process.env.GITHUB_MODELS_TOKEN) throw new Error("GITHUB_MODELS_TOKEN missing");
     body = compactToolsForProvider(body, Number(process.env.GITHUB_MAX_TOOLS || 12));
@@ -480,7 +480,7 @@ const providers = {
         ...body,
         model: process.env.GITHUB_MODELS_MODEL || "openai/gpt-4.1-mini"
       }),
-      signal: AbortSignal.timeout(providerTimeoutMs)
+      signal: AbortSignal.timeout(Math.max(1000, Math.min(providerTimeoutMs, (context.deadline || (Date.now() + providerTimeoutMs)) - Date.now())))
     });
     if (!r.ok) throw await providerResponseError("github", r);
     return r.json();
@@ -507,7 +507,7 @@ const providers = {
         ...body,
         model: process.env.OPENROUTER_MODEL || "openrouter/free"
       }),
-      signal: AbortSignal.timeout(providerTimeoutMs)
+      signal: AbortSignal.timeout(Math.max(1000, Math.min(providerTimeoutMs, (context.deadline || (Date.now() + providerTimeoutMs)) - Date.now())))
     });
     if (!r.ok) throw await providerResponseError("openrouter", r);
     return r.json();
@@ -553,6 +553,36 @@ app.get("/v1/models", (req, res) => {
   });
 });
 
+app.get("/v1/router/status", (req, res) => {
+  if (!process.env.ROUTER_API_KEY) return res.status(503).json({error:"Router authentication is not configured"});
+  if (!hasValidRouterKey(req)) return res.status(401).json({error:"Unauthorized"});
+  res.setHeader("Cache-Control","no-store");
+  res.json({
+    ok:true,
+    providers: order.map(provider => {
+      const slots = configuredCredentialSlots(provider);
+      return {
+        provider,
+        configured: slots.length,
+        ready: providerCoolingDown(provider) ? 0 : availableCredentialSlots(provider).length,
+        provider_cooldown_seconds: Math.ceil(remainingMs(providerCooldowns.get(provider))/1000),
+        credentials: slots.map(slot => ({
+          slot,
+          ready: !providerCoolingDown(provider) && remainingMs(credentialCooldowns.get(slot))===0,
+          cooldown_seconds: Math.ceil(remainingMs(credentialCooldowns.get(slot))/1000),
+          stats_since_restart: credentialStats.get(slot)||{success:0,failed:0,tokensReported:0}
+        }))
+      };
+    }),
+    limits: {
+      max_attempts_per_request:maxProviderAttempts,
+      max_keys_per_provider:maxKeysPerProvider,
+      total_timeout_ms:totalTimeoutMs,
+      max_output_tokens:Math.max(1,Number(process.env.MAX_OUTPUT_TOKENS||1024))
+    }
+  });
+});
+
 app.get("/health/github-models", async (req, res) => {
   if (!process.env.ROUTER_API_KEY) return res.status(503).json({ ok: false, error: "Router authentication is not configured" });
   if (!hasValidRouterKey(req)) return res.status(401).json({ ok: false, error: "Unauthorized" });
@@ -586,22 +616,24 @@ app.post("/v1/chat/completions", async (req, res) => {
   const requestOrder = mustUseTool
     ? (order.includes("gemini") ? ["gemini", ...order.filter(name => name !== "gemini")] : order)
     : order;
-
+  // Budget applies to actual upstream calls. A provider may use a second authorized
+  // credential only for quota/auth failures; tool-format errors move to another provider.
+  const plan = requestOrder.flatMap(name =>
+    Array(Math.min(maxKeysPerProvider, configuredCredentialSlots(name).length)).fill(name));
+  const deadline = Date.now() + totalTimeoutMs;
   let attempts = 0;
-  for (const name of requestOrder) {
-    if (attempts >= maxProviderAttempts) break;
+  for (const name of plan) {
+    if (attempts >= maxProviderAttempts || Date.now() >= deadline) break;
     if (providerCoolingDown(name)) {
       errors.push({ provider: name, error: "Temporarily skipped after a recent quota/rate/credit failure" });
       continue;
     }
     const fn = providers[name];
-    if (!fn) {
-      errors.push({ provider: name, error: "Unknown provider" });
-      continue;
-    }
+    if (!fn) continue;
+    if (!availableCredentialSlots(name).length) continue;
 
     attempts++;
-    const providerContext = {};
+    const providerContext = { deadline };
     try {
       const wantsStream = req.body?.stream === true;
       const originalToolsIn = Array.isArray(req.body?.tools) ? req.body.tools.length : 0;
@@ -625,7 +657,8 @@ app.post("/v1/chat/completions", async (req, res) => {
             )
           : null;
 
-        if (!retryBody) throw firstError;
+        if (!retryBody || attempts >= maxProviderAttempts || Date.now() >= deadline) throw firstError;
+        attempts++;
 
         console.warn(`[router] provider=${name} retrying once with requested missing tool=${missingToolName}`);
         result = await fn(retryBody, providerContext);
@@ -645,13 +678,14 @@ app.post("/v1/chat/completions", async (req, res) => {
         toolNames.some(toolName => returnedText.includes(toolName));
       const looksLikeSerializedToolCall = toolsIn > 0 && toolCallsOut === 0 &&
         /<tool_call>|<\/tool_call>|<arg_value>|<\/arg_value>/i.test(returnedText);
-      console.log(`[router] provider=${name} success slot=${providerContext.slot || "single"} tools_in=${toolsIn}/${originalToolsIn} tool_calls_out=${toolCallsOut} finish=${result?.choices?.[0]?.finish_reason || "unknown"}`);
       if (looksLikeSerializedToolCall || mentionsKnownTool) {
         throw new Error("Provider described/serialized a tool call as text instead of structured tool_calls");
       }
       if (mustUseTool && toolsIn > 0 && toolCallsOut === 0) {
         throw new Error("Explicit tool request returned no structured tool_calls; trying next provider");
       }
+      recordStat(providerContext.slot, "success", result?.usage?.total_tokens);
+      console.log(`[router] provider=${name} success slot=${providerContext.slot || "single"} tools_in=${toolsIn}/${originalToolsIn} tool_calls_out=${toolCallsOut} finish=${result?.choices?.[0]?.finish_reason || "unknown"}`);
 
       if (wantsStream) {
         const message = result?.choices?.[0]?.message || {};
@@ -709,11 +743,14 @@ app.post("/v1/chat/completions", async (req, res) => {
         .replace(/(Bearer\\s+)[A-Za-z0-9._-]+/gi, "$1[REDACTED]")
         .slice(0, 500);
       console.error(`[router] provider=${name} failed slot=${providerContext.slot || "single"}: ${safeError}`);
+      recordStat(providerContext.slot, "failed");
       if (!coolDownCredential(providerContext.slot, err)) setProviderCooldown(name, err);
       errors.push({ provider: name, error: safeError });
     }
   }
 
+  const retrySeconds = secondsUntilAnyCredential();
+  if (retrySeconds != null && retrySeconds > 0) res.setHeader("Retry-After", String(retrySeconds));
   res.status(502).json({
     error: "All configured providers failed",
     details: errors
