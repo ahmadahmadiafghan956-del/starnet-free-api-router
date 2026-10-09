@@ -210,6 +210,7 @@ function setProviderCooldown(name, error) {
 
 // Multiple authorized credentials are selectable per request; a rate-limit failure
 // falls through to the next provider, never retries another key on the same request.
+const providerTimeoutMs = Math.max(5000, Math.min(60000, Number(process.env.PROVIDER_TIMEOUT_MS) || 25000));
 const credentialCounters = new Map();
 function selectProviderCredential(provider, legacyName) {
   const base = provider.toUpperCase() + "_API_KEY_";
@@ -277,7 +278,8 @@ const providers = {
       body: JSON.stringify({
         ...body,
         model: process.env.GROQ_MODEL || "openai/gpt-oss-20b"
-      })
+      }),
+      signal: AbortSignal.timeout(providerTimeoutMs)
     });
     if (!r.ok) throw new Error(`Groq ${r.status}`);
     return r.json();
@@ -306,10 +308,11 @@ const providers = {
           ...(body.stop != null ? { stop: body.stop } : {}),
           ...(Array.isArray(body.tools) ? { tools: body.tools } : {}),
           ...(body.tool_choice != null ? { tool_choice: body.tool_choice } : {})
-        })
+        }),
+        signal: AbortSignal.timeout(providerTimeoutMs)
       }
     );
-    if (!r.ok) throw new Error(`Cloudflare ${r.status}: ${await r.text()}`);
+    if (!r.ok) throw new Error(`Cloudflare ${r.status}`);
     return r.json();
   },
 
@@ -351,7 +354,8 @@ const providers = {
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(requestBody)
+        body: JSON.stringify(requestBody),
+        signal: AbortSignal.timeout(providerTimeoutMs)
       }
     );
 
@@ -396,7 +400,8 @@ const providers = {
       body: JSON.stringify({
         ...body,
         model: process.env.MISTRAL_MODEL || "mistral-small-latest"
-      })
+      }),
+      signal: AbortSignal.timeout(providerTimeoutMs)
     });
     if (!r.ok) throw new Error(`Mistral ${r.status}`);
     return r.json();
@@ -416,9 +421,10 @@ const providers = {
       body: JSON.stringify({
         ...body,
         model: process.env.GITHUB_MODELS_MODEL || "openai/gpt-4.1-mini"
-      })
+      }),
+      signal: AbortSignal.timeout(providerTimeoutMs)
     });
-    if (!r.ok) throw new Error(`GitHub Models ${r.status}: ${await r.text()}`);
+    if (!r.ok) throw new Error(`GitHub Models ${r.status}`);
     return r.json();
   },
 
@@ -440,9 +446,10 @@ const providers = {
       body: JSON.stringify({
         ...body,
         model: process.env.OPENROUTER_MODEL || "openrouter/free"
-      })
+      }),
+      signal: AbortSignal.timeout(providerTimeoutMs)
     });
-    if (!r.ok) throw new Error(`OpenRouter ${r.status}: ${await r.text()}`);
+    if (!r.ok) throw new Error(`OpenRouter ${r.status}`);
     return r.json();
   }
 };
@@ -564,6 +571,9 @@ app.post("/v1/chat/completions", async (req, res) => {
         ? result.choices[0].message.tool_calls.length
         : 0;
       const returnedText = String(result?.choices?.[0]?.message?.content || "");
+      if (!returnedText.trim() && toolCallsOut === 0) {
+        throw new Error("Provider returned empty text and no tool calls; trying next provider");
+      }
       const toolNames = Array.isArray(req.body?.tools)
         ? req.body.tools.map(t => t?.function?.name).filter(Boolean)
         : [];
