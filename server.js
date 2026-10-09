@@ -216,7 +216,11 @@ function selectProviderCredential(provider, legacyName) {
   const numbered = Object.keys(process.env)
     .filter(name => name.startsWith(base) && /^\d+$/.test(name.slice(base.length)) && process.env[name])
     .sort((a, b) => Number(a.slice(base.length)) - Number(b.slice(base.length)));
-  const names = numbered.length ? numbered : [legacyName];
+  // Include legacy and numbered credentials, without duplicate values.
+  const names = [legacyName, ...numbered]
+    .filter(name => process.env[name] && process.env[name] !== "REPLACE_ME")
+    .filter((name, index, all) => all.findIndex(other => process.env[other] === process.env[name]) === index);
+  if (!names.length) return undefined;
   const index = credentialCounters.get(provider) || 0;
   credentialCounters.set(provider, (index + 1) % names.length);
   return process.env[names[index % names.length]];
@@ -275,7 +279,7 @@ const providers = {
         model: process.env.GROQ_MODEL || "openai/gpt-oss-20b"
       })
     });
-    if (!r.ok) throw new Error(`Groq ${r.status}: ${await r.text()}`);
+    if (!r.ok) throw new Error(`Groq ${r.status}`);
     return r.json();
   },
 
@@ -311,7 +315,8 @@ const providers = {
 
   async gemini(body) {
     body = normalizedBody(body);
-    if (!process.env.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY missing");
+    const geminiKey = selectProviderCredential("gemini", "GEMINI_API_KEY");
+    if (!geminiKey) throw new Error("GEMINI_API_KEY missing");
     const model = process.env.GEMINI_MODEL || "gemini-3.5-flash";
 
     // Convert OpenAI-style messages and tools from StarNet to Gemini format.
@@ -342,7 +347,7 @@ const providers = {
     };
 
     const r = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(process.env.GEMINI_API_KEY)}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(geminiKey)}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -350,7 +355,7 @@ const providers = {
       }
     );
 
-    if (!r.ok) throw new Error(`Gemini ${r.status}: ${await r.text()}`);
+    if (!r.ok) throw new Error(`Gemini ${r.status}`);
     const data = await r.json();
     const parts = data?.candidates?.[0]?.content?.parts || [];
     const text = parts.map(p => p?.text || "").join("");
@@ -380,11 +385,12 @@ const providers = {
 
   async mistral(body) {
     body = normalizedBody(body);
-    if (!process.env.MISTRAL_API_KEY) throw new Error("MISTRAL_API_KEY missing");
+    const mistralKey = selectProviderCredential("mistral", "MISTRAL_API_KEY");
+    if (!mistralKey) throw new Error("MISTRAL_API_KEY missing");
     const r = await fetch("https://api.mistral.ai/v1/chat/completions", {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${process.env.MISTRAL_API_KEY}`,
+        "Authorization": `Bearer ${mistralKey}`,
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
@@ -392,7 +398,7 @@ const providers = {
         model: process.env.MISTRAL_MODEL || "mistral-small-latest"
       })
     });
-    if (!r.ok) throw new Error(`Mistral ${r.status}: ${await r.text()}`);
+    if (!r.ok) throw new Error(`Mistral ${r.status}`);
     return r.json();
   },
 
