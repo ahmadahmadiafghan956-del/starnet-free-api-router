@@ -297,7 +297,7 @@ async function callStagedApiProvider(name, body, context = {}) {
   const config = stagedApiProviders[name];
   if (!config) throw new Error("Unknown staged provider");
   // A staged provider is not eligible for auto-routing until explicitly added to PROVIDER_ORDER.
-  const selected = name === "cohere" ? selectProviderCredential("cohere", config.key) : null;
+  const selected = name === "cohere" ? selectProviderCredential("cohere") : null;
   if (selected) context.slot = selected.slot;
   const key = name === "cohere" ? selected?.value : process.env[config.key];
   const model = process.env[config.model] || config.fallback;
@@ -309,14 +309,7 @@ async function callStagedApiProvider(name, body, context = {}) {
     signal: AbortSignal.timeout(15000)
   });
   if (!response.ok) {
-    const raw = await response.text();
-    let reason = "unspecified";
-    try {
-      const parsed = JSON.parse(raw);
-      reason = String(parsed.message || parsed.error?.message || parsed.error || "unspecified");
-    } catch {}
-    console.warn("[router] " + name + " HTTP " + response.status + " category=" + (/tool|function|schema/i.test(reason) ? "tool_schema" : /message|role|content/i.test(reason) ? "message_format" : "other"));
-    throw new Error(name + " HTTP " + response.status);
+    throw await providerResponseError(name, response);
   }
   return response.json();
 }
@@ -328,7 +321,7 @@ const providers = {
   async cohere(body, context) { return callStagedApiProvider("cohere", body, context); },
   async groq(body, context = {}) {
     body = compactToolsForProvider(trimMessagesForGroq(normalizedBody(body)), Number(process.env.GROQ_MAX_TOOLS || 12));
-    const selected = selectProviderCredential("groq", "GROQ_API_KEY");
+    const selected = selectProviderCredential("groq");
     if (!selected) throw new Error("Groq credentials unavailable or cooling down");
     context.slot = selected.slot;
     const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
@@ -343,22 +336,23 @@ const providers = {
       }),
       signal: AbortSignal.timeout(providerTimeoutMs)
     });
-    if (!r.ok) throw new Error(`Groq ${r.status}`);
+    if (!r.ok) throw await providerResponseError("groq", r);
     return r.json();
   },
 
-  async cloudflare(body) {
+  async cloudflare(body, context = {}) {
     body = normalizedBody(body);
-    if (!process.env.CLOUDFLARE_API_TOKEN) throw new Error("CLOUDFLARE_API_TOKEN missing");
-    if (!process.env.CLOUDFLARE_ACCOUNT_ID) throw new Error("CLOUDFLARE_ACCOUNT_ID missing");
+    const selected = selectProviderCredential("cloudflare");
+    if (!selected) throw new Error("Cloudflare credentials unavailable or cooling down");
+    context.slot = selected.slot;
 
     const model = process.env.CLOUDFLARE_MODEL || "@cf/zai-org/glm-4.7-flash";
     const r = await fetch(
-      `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(process.env.CLOUDFLARE_ACCOUNT_ID)}/ai/v1/chat/completions`,
+      `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(selected.accountId)}/ai/v1/chat/completions`,
       {
         method: "POST",
         headers: {
-          "Authorization": `Bearer ${process.env.CLOUDFLARE_API_TOKEN}`,
+          "Authorization": `Bearer ${selected.value}`,
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
@@ -374,13 +368,13 @@ const providers = {
         signal: AbortSignal.timeout(providerTimeoutMs)
       }
     );
-    if (!r.ok) throw new Error(`Cloudflare ${r.status}`);
+    if (!r.ok) throw await providerResponseError("cloudflare", r);
     return r.json();
   },
 
   async gemini(body, context = {}) {
     body = normalizedBody(body);
-    const selected = selectProviderCredential("gemini", "GEMINI_API_KEY");
+    const selected = selectProviderCredential("gemini");
     if (!selected) throw new Error("Gemini credentials unavailable or cooling down");
     context.slot = selected.slot;
     const model = process.env.GEMINI_MODEL || "gemini-3.5-flash";
@@ -422,7 +416,7 @@ const providers = {
       }
     );
 
-    if (!r.ok) throw new Error(`Gemini ${r.status}`);
+    if (!r.ok) throw await providerResponseError("gemini", r);
     const data = await r.json();
     const parts = data?.candidates?.[0]?.content?.parts || [];
     const text = parts.map(p => p?.text || "").join("");
@@ -452,7 +446,7 @@ const providers = {
 
   async mistral(body, context = {}) {
     body = normalizedBody(body);
-    const selected = selectProviderCredential("mistral", "MISTRAL_API_KEY");
+    const selected = selectProviderCredential("mistral");
     if (!selected) throw new Error("Mistral credentials unavailable or cooling down");
     context.slot = selected.slot;
     const r = await fetch("https://api.mistral.ai/v1/chat/completions", {
@@ -467,7 +461,7 @@ const providers = {
       }),
       signal: AbortSignal.timeout(providerTimeoutMs)
     });
-    if (!r.ok) throw new Error(`Mistral ${r.status}`);
+    if (!r.ok) throw await providerResponseError("mistral", r);
     return r.json();
   },
 
@@ -488,17 +482,19 @@ const providers = {
       }),
       signal: AbortSignal.timeout(providerTimeoutMs)
     });
-    if (!r.ok) throw new Error(`GitHub Models ${r.status}`);
+    if (!r.ok) throw await providerResponseError("github", r);
     return r.json();
   },
 
-  async openrouter(body) {
+  async openrouter(body, context = {}) {
     body = normalizedBody(body);
     const openRouterCap = Math.max(1, Number(process.env.OPENROUTER_MAX_OUTPUT_TOKENS || 1024));
     body.max_tokens = Math.min(Number(body.max_tokens || openRouterCap), openRouterCap);
-    if (!process.env.OPENROUTER_API_KEY) throw new Error("OPENROUTER_API_KEY missing");
+    const selected = selectProviderCredential("openrouter");
+    if (!selected) throw new Error("OpenRouter credentials unavailable or cooling down");
+    context.slot = selected.slot;
     const headers = {
-      "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
+      "Authorization": `Bearer ${selected.value}`,
       "Content-Type": "application/json"
     };
     if (process.env.OPENROUTER_SITE_URL) headers["HTTP-Referer"] = process.env.OPENROUTER_SITE_URL;
@@ -513,7 +509,7 @@ const providers = {
       }),
       signal: AbortSignal.timeout(providerTimeoutMs)
     });
-    if (!r.ok) throw new Error(`OpenRouter ${r.status}`);
+    if (!r.ok) throw await providerResponseError("openrouter", r);
     return r.json();
   }
 };
