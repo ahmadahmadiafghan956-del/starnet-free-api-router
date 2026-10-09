@@ -208,6 +208,20 @@ function setProviderCooldown(name, error) {
 }
 
 
+// Multiple authorized credentials are selectable per request; a rate-limit failure
+// falls through to the next provider, never retries another key on the same request.
+const credentialCounters = new Map();
+function selectProviderCredential(provider, legacyName) {
+  const base = provider.toUpperCase() + "_API_KEY_";
+  const numbered = Object.keys(process.env)
+    .filter(name => name.startsWith(base) && /^\d+$/.test(name.slice(base.length)) && process.env[name])
+    .sort((a, b) => Number(a.slice(base.length)) - Number(b.slice(base.length)));
+  const names = numbered.length ? numbered : [legacyName];
+  const index = credentialCounters.get(provider) || 0;
+  credentialCounters.set(provider, (index + 1) % names.length);
+  return process.env[names[index % names.length]];
+}
+
 const stagedApiProviders = {
   fireworks: { endpoint: "https://api.fireworks.ai/inference/v1", key: "FIREWORKS_API_KEY", model: "FIREWORKS_MODEL" },
   cerebras: { endpoint: "https://api.cerebras.ai/v1", key: "CEREBRAS_API_KEY", model: "CEREBRAS_MODEL", fallback: "gpt-oss-120b" },
@@ -219,7 +233,7 @@ async function callStagedApiProvider(name, body) {
   const config = stagedApiProviders[name];
   if (!config) throw new Error("Unknown staged provider");
   // A staged provider is not eligible for auto-routing until explicitly added to PROVIDER_ORDER.
-  const key = process.env[config.key];
+  const key = name === "cohere" ? selectProviderCredential("cohere", config.key) : process.env[config.key];
   const model = process.env[config.model] || config.fallback;
   if (!key || !model) throw new Error(name + " is unconfigured");
   const response = await fetch(config.endpoint + "/chat/completions", {
@@ -248,11 +262,12 @@ const providers = {
   async cohere(body) { return callStagedApiProvider("cohere", body); },
   async groq(body) {
     body = compactToolsForProvider(trimMessagesForGroq(normalizedBody(body)), Number(process.env.GROQ_MAX_TOOLS || 12));
-    if (!process.env.GROQ_API_KEY) throw new Error("GROQ_API_KEY missing");
+    const groqKey = selectProviderCredential("groq", "GROQ_API_KEY");
+    if (!groqKey) throw new Error("GROQ_API_KEY missing");
     const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${process.env.GROQ_API_KEY}`,
+        "Authorization": `Bearer ${groqKey}`,
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
