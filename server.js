@@ -211,7 +211,7 @@ function setProviderCooldown(name, error) {
 // Multiple authorized credentials are selectable per request; a rate-limit failure
 // falls through to the next provider, never retries another key on the same request.
 const providerTimeoutMs = Math.max(5000, Math.min(60000, Number(process.env.PROVIDER_TIMEOUT_MS) || 20000));
-const maxProviderAttempts = Math.max(1, Math.min(6, Number(process.env.MAX_PROVIDER_ATTEMPTS) || 3));
+const maxProviderAttempts = Math.max(1, Math.min(6, Number(process.env.MAX_PROVIDER_ATTEMPTS) || 4));
 const credentialCooldowns = new Map();
 
 function credentialCooldownDuration(error) {
