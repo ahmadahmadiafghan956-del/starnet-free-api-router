@@ -44,7 +44,7 @@ function normalizedBody(body = {}) {
     });
   }
   const requested = Number(copy.max_tokens ?? copy.max_completion_tokens);
-  const cap = Math.max(1, Number(process.env.MAX_OUTPUT_TOKENS || 2048));
+  const cap = Math.max(1, Number(process.env.MAX_OUTPUT_TOKENS || 1024));
   if (!Number.isFinite(requested) || requested > cap) copy.max_tokens = cap;
   else copy.max_tokens = Math.max(1, requested);
   delete copy.max_completion_tokens;
@@ -210,7 +210,30 @@ function setProviderCooldown(name, error) {
 
 // Multiple authorized credentials are selectable per request; a rate-limit failure
 // falls through to the next provider, never retries another key on the same request.
-const providerTimeoutMs = Math.max(5000, Math.min(60000, Number(process.env.PROVIDER_TIMEOUT_MS) || 25000));
+const providerTimeoutMs = Math.max(5000, Math.min(60000, Number(process.env.PROVIDER_TIMEOUT_MS) || 20000));
+const maxProviderAttempts = Math.max(1, Math.min(6, Number(process.env.MAX_PROVIDER_ATTEMPTS) || 3));
+const credentialCooldowns = new Map();
+
+function credentialCooldownDuration(error) {
+  const message = String(error?.message || error || "").toLowerCase();
+  if (/\b401\b|\b403\b/.test(message)) return 10 * 60 * 1000;
+  if (/\b402\b|out of credit|insufficient credit/.test(message)) return 30 * 60 * 1000;
+  if (/\b429\b|quota exceeded|rate limit/.test(message)) return 60 * 1000;
+  return 0;
+}
+function coolDownCredential(slot, error) {
+  if (!slot) return false;
+  const ms = credentialCooldownDuration(error);
+  if (!ms) return false;
+  credentialCooldowns.set(slot, Date.now() + ms);
+  return true;
+}
+function credentialIsAvailable(slot) {
+  const until = credentialCooldowns.get(slot) || 0;
+  if (until > Date.now()) return false;
+  credentialCooldowns.delete(slot);
+  return true;
+}
 const credentialCounters = new Map();
 function selectProviderCredential(provider, legacyName) {
   const base = provider.toUpperCase() + "_API_KEY_";
@@ -220,11 +243,13 @@ function selectProviderCredential(provider, legacyName) {
   // Include legacy and numbered credentials, without duplicate values.
   const names = [legacyName, ...numbered]
     .filter(name => process.env[name] && process.env[name] !== "REPLACE_ME")
-    .filter((name, index, all) => all.findIndex(other => process.env[other] === process.env[name]) === index);
-  if (!names.length) return undefined;
+    .filter((name, index, all) => all.findIndex(other => process.env[other] === process.env[name]) === index)
+    .filter(credentialIsAvailable);
+  if (!names.length) return null;
   const index = credentialCounters.get(provider) || 0;
-  credentialCounters.set(provider, (index + 1) % names.length);
-  return process.env[names[index % names.length]];
+  credentialCounters.set(provider, index + 1);
+  const slot = names[index % names.length];
+  return { value: process.env[slot], slot };
 }
 
 const stagedApiProviders = {
@@ -234,11 +259,13 @@ const stagedApiProviders = {
   cohere: { endpoint: "https://api.cohere.ai/compatibility/v1", key: "COHERE_API_KEY", model: "COHERE_MODEL", fallback: "command-a-03-2025" }
 };
 
-async function callStagedApiProvider(name, body) {
+async function callStagedApiProvider(name, body, context = {}) {
   const config = stagedApiProviders[name];
   if (!config) throw new Error("Unknown staged provider");
   // A staged provider is not eligible for auto-routing until explicitly added to PROVIDER_ORDER.
-  const key = name === "cohere" ? selectProviderCredential("cohere", config.key) : process.env[config.key];
+  const selected = name === "cohere" ? selectProviderCredential("cohere", config.key) : null;
+  if (selected) context.slot = selected.slot;
+  const key = name === "cohere" ? selected?.value : process.env[config.key];
   const model = process.env[config.model] || config.fallback;
   if (!key || !model) throw new Error(name + " is unconfigured");
   const response = await fetch(config.endpoint + "/chat/completions", {
@@ -264,15 +291,16 @@ const providers = {
   async fireworks(body) { return callStagedApiProvider("fireworks", body); },
   async cerebras(body) { return callStagedApiProvider("cerebras", body); },
   async together(body) { return callStagedApiProvider("together", body); },
-  async cohere(body) { return callStagedApiProvider("cohere", body); },
-  async groq(body) {
+  async cohere(body, context) { return callStagedApiProvider("cohere", body, context); },
+  async groq(body, context = {}) {
     body = compactToolsForProvider(trimMessagesForGroq(normalizedBody(body)), Number(process.env.GROQ_MAX_TOOLS || 12));
-    const groqKey = selectProviderCredential("groq", "GROQ_API_KEY");
-    if (!groqKey) throw new Error("GROQ_API_KEY missing");
+    const selected = selectProviderCredential("groq", "GROQ_API_KEY");
+    if (!selected) throw new Error("Groq credentials unavailable or cooling down");
+    context.slot = selected.slot;
     const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${groqKey}`,
+        "Authorization": `Bearer ${selected.value}`,
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
@@ -316,10 +344,11 @@ const providers = {
     return r.json();
   },
 
-  async gemini(body) {
+  async gemini(body, context = {}) {
     body = normalizedBody(body);
-    const geminiKey = selectProviderCredential("gemini", "GEMINI_API_KEY");
-    if (!geminiKey) throw new Error("GEMINI_API_KEY missing");
+    const selected = selectProviderCredential("gemini", "GEMINI_API_KEY");
+    if (!selected) throw new Error("Gemini credentials unavailable or cooling down");
+    context.slot = selected.slot;
     const model = process.env.GEMINI_MODEL || "gemini-3.5-flash";
 
     // Convert OpenAI-style messages and tools from StarNet to Gemini format.
@@ -350,7 +379,7 @@ const providers = {
     };
 
     const r = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(geminiKey)}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(selected.value)}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -387,14 +416,15 @@ const providers = {
     };
   },
 
-  async mistral(body) {
+  async mistral(body, context = {}) {
     body = normalizedBody(body);
-    const mistralKey = selectProviderCredential("mistral", "MISTRAL_API_KEY");
-    if (!mistralKey) throw new Error("MISTRAL_API_KEY missing");
+    const selected = selectProviderCredential("mistral", "MISTRAL_API_KEY");
+    if (!selected) throw new Error("Mistral credentials unavailable or cooling down");
+    context.slot = selected.slot;
     const r = await fetch("https://api.mistral.ai/v1/chat/completions", {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${mistralKey}`,
+        "Authorization": `Bearer ${selected.value}`,
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
@@ -527,7 +557,9 @@ app.post("/v1/chat/completions", async (req, res) => {
     ? (order.includes("gemini") ? ["gemini", ...order.filter(name => name !== "gemini")] : order)
     : order;
 
+  let attempts = 0;
   for (const name of requestOrder) {
+    if (attempts >= maxProviderAttempts) break;
     if (providerCoolingDown(name)) {
       errors.push({ provider: name, error: "Temporarily skipped after a recent quota/rate/credit failure" });
       continue;
@@ -538,6 +570,8 @@ app.post("/v1/chat/completions", async (req, res) => {
       continue;
     }
 
+    attempts++;
+    const providerContext = {};
     try {
       const wantsStream = req.body?.stream === true;
       const originalToolsIn = Array.isArray(req.body?.tools) ? req.body.tools.length : 0;
@@ -549,7 +583,7 @@ app.post("/v1/chat/completions", async (req, res) => {
       const toolsIn = Array.isArray(providerBody?.tools) ? providerBody.tools.length : 0;
       let result;
       try {
-        result = await fn(providerBody);
+        result = await fn(providerBody, providerContext);
       } catch (firstError) {
         const missingToolName = attemptedMissingTool(firstError);
         const retryBody = missingToolName
@@ -564,7 +598,7 @@ app.post("/v1/chat/completions", async (req, res) => {
         if (!retryBody) throw firstError;
 
         console.warn(`[router] provider=${name} retrying once with requested missing tool=${missingToolName}`);
-        result = await fn(retryBody);
+        result = await fn(retryBody, providerContext);
         providerBody = retryBody;
       }
       const toolCallsOut = Array.isArray(result?.choices?.[0]?.message?.tool_calls)
@@ -581,7 +615,7 @@ app.post("/v1/chat/completions", async (req, res) => {
         toolNames.some(toolName => returnedText.includes(toolName));
       const looksLikeSerializedToolCall = toolsIn > 0 && toolCallsOut === 0 &&
         /<tool_call>|<\/tool_call>|<arg_value>|<\/arg_value>/i.test(returnedText);
-      console.log(`[router] provider=${name} success tools_in=${toolsIn}/${originalToolsIn} tool_calls_out=${toolCallsOut} finish=${result?.choices?.[0]?.finish_reason || "unknown"}`);
+      console.log(`[router] provider=${name} success slot=${providerContext.slot || "single"} tools_in=${toolsIn}/${originalToolsIn} tool_calls_out=${toolCallsOut} finish=${result?.choices?.[0]?.finish_reason || "unknown"}`);
       if (looksLikeSerializedToolCall || mentionsKnownTool) {
         throw new Error("Provider described/serialized a tool call as text instead of structured tool_calls");
       }
@@ -644,8 +678,8 @@ app.post("/v1/chat/completions", async (req, res) => {
         .replace(/(key=)[^&\\s]+/gi, "$1[REDACTED]")
         .replace(/(Bearer\\s+)[A-Za-z0-9._-]+/gi, "$1[REDACTED]")
         .slice(0, 500);
-      console.error(`[router] provider=${name} failed: ${safeError}`);
-      setProviderCooldown(name, err);
+      console.error(`[router] provider=${name} failed slot=${providerContext.slot || "single"}: ${safeError}`);
+      if (!coolDownCredential(providerContext.slot, err)) setProviderCooldown(name, err);
       errors.push({ provider: name, error: safeError });
     }
   }
